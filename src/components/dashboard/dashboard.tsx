@@ -11,12 +11,9 @@ import {
   Boxes,
   Braces,
   Check,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   Code2,
-  Command,
-  ExternalLink,
   FileCode2,
   FileText,
   GitBranch,
@@ -26,16 +23,18 @@ import {
   Menu,
   Network,
   Plus,
+  RefreshCw,
   Rocket,
   Search,
   Settings2,
   ShieldCheck,
   Sparkles,
-  Terminal,
+  X,
   Zap,
   type LucideIcon,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -47,13 +46,16 @@ import { Modal } from "@/components/ui/modal";
 import { Spotlight } from "@/components/ui/spotlight";
 import { Github } from "@/components/ui/github-icon";
 import {
-  architecture,
-  coreFiles,
+  architecture as demoArchitecture,
+  coreFiles as demoFiles,
   demoReadme,
-  demoRepository,
 } from "@/lib/demo";
 import { cn, downloadText } from "@/lib/utils";
-import type { RepositoryPreview } from "@/lib/types";
+import type {
+  RepositoryData,
+  RepositorySummary,
+  ServiceConfiguration,
+} from "@/lib/types";
 import { ChatDrawer } from "./chat-drawer";
 import { CodeTour } from "./code-tour";
 import { Markdown } from "./markdown";
@@ -61,41 +63,75 @@ import { Markdown } from "./markdown";
 const ArchitectureMap = dynamic(() => import("./architecture-map"), {
   ssr: false,
   loading: () => (
-    <div className="diagram-grid flex min-h-[264px] items-center justify-center gap-2 text-xs text-zinc-500">
+    <div className="diagram-grid flex min-h-64 items-center justify-center gap-2 text-xs text-zinc-500">
       <LoaderCircle className="size-4 animate-spin" />
       Loading diagram…
     </div>
   ),
 });
-
 type Section =
   "overview" | "architecture" | "documentation" | "tour" | "deploy";
-type ModalName = "settings" | "help" | "upgrade" | "search" | "mobile" | null;
-const navigation: {
-  id: Section;
-  title: string;
-  icon: LucideIcon;
-  shortcut?: string;
-}[] = [
+type View =
+  "settings" | "search" | "mobile" | "upgrade" | "help" | "files" | null;
+type Detail = RepositorySummary & { data: RepositoryData | null };
+const navigation: { id: Section; title: string; icon: LucideIcon }[] = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "architecture", title: "Architecture", icon: Network },
   { id: "documentation", title: "Documentation", icon: FileText },
-  { id: "tour", title: "Code tour", icon: Braces, shortcut: "4" },
+  { id: "tour", title: "Code tour", icon: Braces },
   { id: "deploy", title: "Deploy guide", icon: Rocket },
 ];
-const sectionTitles: Record<Section, string> = {
-  overview: "Repository overview",
-  architecture: "Architecture explorer",
-  documentation: "Your documentation, sorted.",
-  tour: "A guided look under the hood.",
-  deploy: "From code to production.",
+const defaults: ServiceConfiguration = {
+  clerk: false,
+  groq: false,
+  pinecone: false,
+  local: true,
+  database: "sqlite",
 };
 
+function Account({
+  enabled,
+  onIdentity,
+  onSettings,
+}: {
+  enabled: boolean;
+  onIdentity: () => void;
+  onSettings: () => void;
+}) {
+  return enabled ? (
+    <ClerkAccount onIdentity={onIdentity} />
+  ) : (
+    <button
+      onClick={onSettings}
+      className="flex size-8 items-center justify-center rounded-full border border-violet-300/30 bg-violet-500/15 text-[11px] text-violet-100"
+      aria-label="Workspace settings"
+    >
+      CL
+    </button>
+  );
+}
+function ClerkAccount({ onIdentity }: { onIdentity: () => void }) {
+  const { isLoaded, isSignedIn, user } = useUser();
+  useEffect(() => {
+    if (isLoaded) onIdentity();
+  }, [isLoaded, user?.id, onIdentity]);
+  return !isLoaded ? (
+    <span className="size-8 animate-pulse rounded-full bg-zinc-800" />
+  ) : isSignedIn ? (
+    <UserButton />
+  ) : (
+    <SignInButton mode="modal">
+      <Button variant="outline" size="sm">
+        Sign in
+      </Button>
+    </SignInButton>
+  );
+}
 function Logo() {
   return (
     <span className="flex items-center gap-2.5">
       <span className="logo-mark">
-        <Code2 size={21} strokeWidth={2.3} />
+        <Code2 size={21} />
       </span>
       <span className="text-[21px] font-semibold tracking-[-0.9px]">
         Code<span className="text-violet-300">Lens</span>
@@ -106,22 +142,6 @@ function Logo() {
     </span>
   );
 }
-
-function ClerkProfile() {
-  const { isSignedIn, isLoaded } = useUser();
-  if (!isLoaded)
-    return <span className="size-8 animate-pulse rounded-full bg-zinc-800" />;
-  return isSignedIn ? (
-    <UserButton appearance={{ elements: { avatarBox: "size-8" } }} />
-  ) : (
-    <SignInButton mode="modal">
-      <Button variant="outline" size="sm">
-        Sign in
-      </Button>
-    </SignInButton>
-  );
-}
-
 function Panel({
   title,
   icon: Icon,
@@ -148,82 +168,192 @@ function Panel({
     </section>
   );
 }
+function Empty({
+  title,
+  text,
+  onSetup,
+}: {
+  title: string;
+  text: string;
+  onSetup?: () => void;
+}) {
+  return (
+    <div className="flex min-h-60 flex-col items-center justify-center p-8 text-center">
+      <Sparkles className="mb-4 size-7 text-violet-400/60" />
+      <h3 className="text-sm text-zinc-200">{title}</h3>
+      <p className="mt-2 max-w-md text-xs leading-6 text-zinc-500">{text}</p>
+      {onSetup && (
+        <Button variant="outline" size="sm" className="mt-4" onClick={onSetup}>
+          View integrations
+          <ArrowRight />
+        </Button>
+      )}
+    </div>
+  );
+}
+async function jsonFetch(url: string, init?: RequestInit) {
+  const response = await fetch(url, init),
+    data = await response.json();
+  if (!response.ok)
+    throw new Error(data.error || "The request could not finish.");
+  return data;
+}
 
 export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
-  const [section, setSection] = useState<Section>("overview");
-  const [tourFile, setTourFile] = useState(0);
-  const [modal, setModal] = useState<ModalName>(null);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [repoUrl, setRepoUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [preview, setPreview] = useState<RepositoryPreview | null>(null);
-  const [history, setHistory] = useState<RepositoryPreview[]>([]);
-  const [search, setSearch] = useState("");
-  const repoInput = useRef<HTMLInputElement>(null);
-  const request = useRef<AbortController | null>(null);
+  const [section, setSection] = useState<Section>("overview"),
+    [view, setView] = useState<View>(null);
+  const [config, setConfig] = useState(defaults),
+    [history, setHistory] = useState<RepositorySummary[]>([]);
+  const [selected, setSelected] = useState<string | null>(null),
+    [active, setActive] = useState<Detail | null>(null);
+  const [repoUrl, setRepoUrl] = useState(""),
+    [loading, setLoading] = useState(false),
+    [error, setError] = useState("");
+  const [chat, setChat] = useState(false),
+    [search, setSearch] = useState(""),
+    [tourFile, setTourFile] = useState(0);
+  const [revision, setRevision] = useState(0);
+  const chosen = useRef(false),
+    repoInput = useRef<HTMLInputElement>(null);
+  const identityChanged = useCallback(() => {
+    chosen.current = false;
+    setActive(null);
+    setSelected(null);
+    setRevision((value) => value + 1);
+  }, []);
 
+  const refreshHistory = useCallback(async (signal?: AbortSignal) => {
+    const result = await jsonFetch("/api/repositories", { signal });
+    setHistory(result.repositories);
+    if (!chosen.current && result.repositories[0]) {
+      chosen.current = true;
+      setSelected(result.repositories[0].id);
+    }
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    jsonFetch("/api/workspace", { signal: controller.signal })
+      .then(setConfig)
+      .catch(() => undefined);
+    refreshHistory(controller.signal)
+      .then(() => setError(""))
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(err.message);
+      });
+    return () => controller.abort();
+  }, [revision, refreshHistory]);
+  useEffect(() => {
+    if (!selected) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const repo: Detail = await jsonFetch(`/api/repositories/${selected}`, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setActive(repo);
+        if (repo.status === "processing" || repo.status === "queued")
+          timer = setTimeout(poll, 1500);
+        else await refreshHistory(controller.signal);
+      } catch (err) {
+        if (!controller.signal.aborted) setError((err as Error).message);
+      }
+    };
+    poll();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [selected, revision, refreshHistory]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "k") {
         event.preventDefault();
-        setModal((m) => (m === "search" ? null : "search"));
+        setView((value) => (value === "search" ? null : "search"));
       }
     };
     document.addEventListener("keydown", handler);
-    return () => {
-      document.removeEventListener("keydown", handler);
-      request.current?.abort();
-    };
+    return () => document.removeEventListener("keydown", handler);
   }, []);
 
+  function select(id: string | null) {
+    chosen.current = true;
+    setActive(null);
+    setSelected(id);
+    setView(null);
+    setError("");
+    setSection("overview");
+    setTourFile(0);
+  }
   function navigate(id: Section) {
     setSection(id);
-    setModal(null);
+    setView(null);
   }
   function focusRepo() {
-    setModal(null);
-    setSection("overview");
-    setTimeout(() => repoInput.current?.focus(), 80);
+    setView(null);
+    repoInput.current?.focus();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
-
-  async function inspect(event: FormEvent) {
-    event.preventDefault();
-    if (loading || !repoUrl.trim()) return;
+  async function analyze(url: string) {
+    if (loading) return;
     setLoading(true);
     setError("");
-    request.current = new AbortController();
-    const timeout = setTimeout(() => request.current?.abort(), 40_000);
     try {
-      const response = await fetch("/api/repositories", {
+      const repo = await jsonFetch("/api/repositories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: repoUrl.trim() }),
-        signal: request.current.signal,
+        body: JSON.stringify({ url }),
       });
-      const data = await response.json();
-      if (!response.ok)
-        throw new Error(data.error || "Unable to inspect this repository.");
-      setPreview(data);
-      setHistory((h) =>
-        [data, ...h.filter((item) => item.fullName !== data.fullName)].slice(
-          0,
-          5,
-        ),
-      );
+      select(repo.id);
+      await refreshHistory();
     } catch (err) {
-      setError(
-        err instanceof Error && err.name === "AbortError"
-          ? "The request timed out. Please try again."
-          : err instanceof Error
-            ? err.message
-            : "Something went wrong. Please try again.",
-      );
+      setError((err as Error).message);
     } finally {
-      clearTimeout(timeout);
       setLoading(false);
     }
   }
+  async function cancel() {
+    if (!selected) return;
+    try {
+      await jsonFetch(`/api/repositories/${selected}/cancel`, {
+        method: "POST",
+      });
+      setRevision((value) => value + 1);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+  const demo = !selected,
+    data = active?.data,
+    assets = data?.assets;
+  const name = demo
+    ? "acme/storefront"
+    : active?.name ||
+      history.find((item) => item.id === selected)?.name ||
+      "Loading repository";
+  const coreFiles = demo
+    ? demoFiles
+    : assets?.coreFiles || data?.coreFiles || [];
+  const diagram = demo ? demoArchitecture : assets?.architecture;
+  const readme = demo
+    ? demoReadme
+    : assets?.readme ||
+      data?.files.find((file) => /(^|\/)readme\.md$/i.test(file.path))?.content;
+  const busy = Boolean(
+    active && ["queued", "processing"].includes(active.status),
+  );
+  const techStack = demo
+    ? [
+        "Next.js",
+        "TypeScript",
+        "Tailwind CSS",
+        "Prisma",
+        "PostgreSQL",
+        "Stripe",
+      ]
+    : data?.techStack || [];
+  const score = demo ? 85 : data?.healthScore;
 
   const sidebar = (
     <>
@@ -231,23 +361,24 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
         <Logo />
       </div>
       <button
-        onClick={() => setModal("settings")}
-        className="mx-4 mb-7 flex items-center gap-2.5 rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5 text-left transition hover:bg-white/5"
+        onClick={() => setView("settings")}
+        className="mx-4 mb-7 flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.025] p-3 text-left"
       >
-        <span className="flex size-7 items-center justify-center rounded-md border border-violet-400/20 bg-violet-500/10 text-xs text-violet-300">
+        <span className="flex size-7 items-center justify-center rounded-md bg-violet-500/10 text-xs text-violet-300">
           W
         </span>
-        <span className="flex-1 text-xs font-medium text-zinc-300">
+        <span className="text-xs text-zinc-300">
           Personal workspace
-          <span className="mt-0.5 block text-[10px] font-normal text-zinc-600">
-            Free plan
+          <span className="mt-1 block text-[10px] text-zinc-600">
+            {config.local && !config.clerk
+              ? "Local development"
+              : "Your repositories"}
           </span>
         </span>
-        <ChevronDown size={13} className="text-zinc-600" />
       </button>
       <div className="sidebar-label">WORKSPACE</div>
       <nav className="space-y-1 px-3" aria-label="Main navigation">
-        {navigation.map(({ id, title, icon: Icon, shortcut }) => (
+        {navigation.map(({ id, title, icon: Icon }) => (
           <button
             key={id}
             onClick={() => navigate(id)}
@@ -255,93 +386,95 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
             className={cn("nav-item", section === id && "nav-item-active")}
           >
             <Icon size={17} strokeWidth={1.7} />
-            <span>{title}</span>
-            {shortcut && (
-              <span className="ml-auto rounded border border-white/8 px-1.5 py-0.5 text-[9px] text-zinc-500">
-                {shortcut}
-              </span>
-            )}
+            {title}
             {section === id && (
-              <span className="ml-auto size-1.5 rounded-full bg-violet-400 shadow-[0_0_8px_#a78bfa]" />
+              <span className="ml-auto size-1.5 rounded-full bg-violet-400" />
             )}
           </button>
         ))}
       </nav>
       <div className="sidebar-label mt-8 flex items-center justify-between">
         REPOSITORIES
-        <button
-          onClick={focusRepo}
-          aria-label="Add repository"
-          className="rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-white"
-        >
-          <Plus size={13} />
+        <button onClick={focusRepo} aria-label="Add repository">
+          <Plus size={14} />
         </button>
       </div>
       <div className="space-y-1 px-3">
-        <button
-          onClick={() => navigate("overview")}
-          className="flex w-full items-center gap-2.5 rounded-lg bg-white/[0.035] px-3 py-2.5 text-left"
-        >
-          <Github size={15} className="text-zinc-400" />
-          <span className="truncate text-xs text-zinc-300">
-            acme/storefront
-          </span>
-          <span className="ml-auto size-1.5 shrink-0 rounded-full bg-emerald-400" />
-        </button>
         {history.map((repo) => (
           <button
-            key={repo.fullName}
-            onClick={() => {
-              setPreview(repo);
-              setModal(null);
-            }}
-            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+            key={repo.id}
+            onClick={() => select(repo.id)}
+            className={cn(
+              "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-zinc-500 transition hover:bg-white/5",
+              selected === repo.id && "bg-violet-500/10 text-violet-200",
+            )}
           >
-            <Github size={15} className="shrink-0" />
-            <span className="truncate text-[11px]">{repo.fullName}</span>
+            <Github size={14} className="shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[11px]">{repo.name}</span>
+              <span className="mt-1 block text-[9px] text-zinc-600">
+                {repo.status} · {new Date(repo.createdAt).toLocaleDateString()}
+              </span>
+            </span>
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                repo.status === "ready"
+                  ? "bg-emerald-400"
+                  : repo.status === "failed"
+                    ? "bg-rose-400"
+                    : "bg-violet-400",
+              )}
+            />
           </button>
         ))}
         <button
-          onClick={focusRepo}
-          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-xs text-zinc-600 transition hover:bg-white/5 hover:text-zinc-300"
+          onClick={() => select(null)}
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-xs text-zinc-500",
+            demo && "bg-white/[0.035] text-zinc-300",
+          )}
         >
-          <Plus size={15} />
-          Inspect a repository
+          <Sparkles size={14} />
+          Storefront demo
+          <span className="ml-auto text-[9px] text-zinc-600">SAMPLE</span>
+        </button>
+        <button onClick={focusRepo} className="nav-item !text-[11px]">
+          <Plus size={14} />
+          Analyze a repository
         </button>
       </div>
       <div className="flex-1" />
-      <div className="pro-card mx-4 mb-4 rounded-xl border border-violet-400/15 p-4">
-        <div className="mb-3 flex items-center gap-2 text-violet-300">
-          <Zap size={15} />
-          <span className="text-xs font-medium">A little more superpower.</span>
-        </div>
-        <p className="text-[11px] leading-5 text-zinc-500">
+      <div className="pro-card mx-4 my-4 rounded-xl border border-violet-400/15 p-4">
+        <p className="flex items-center gap-2 text-xs text-violet-300">
+          <Zap size={15} />A little more superpower.
+        </p>
+        <p className="mt-3 text-[11px] leading-5 text-zinc-500">
           Bigger codebases. Deeper insights.
           <br />A workspace that grows with you.
         </p>
         <Button
-          onClick={() => setModal("upgrade")}
+          onClick={() => setView("upgrade")}
           variant="outline"
-          className="mt-4 h-8 w-full border-violet-400/20 bg-violet-500/10 text-xs text-violet-200 hover:bg-violet-500/20"
+          className="mt-4 h-8 w-full border-violet-400/20 bg-violet-500/10 text-xs text-violet-200"
         >
           Explore Pro
-          <ArrowUpRight className="ml-auto !size-3.5" />
+          <ArrowUpRight className="ml-auto" />
         </Button>
       </div>
       <div className="border-t border-white/6 px-3 py-3">
-        <button className="nav-item !py-2" onClick={() => setModal("settings")}>
+        <button className="nav-item" onClick={() => setView("settings")}>
           <Settings2 size={16} />
           Settings
         </button>
-        <button className="nav-item !py-2" onClick={() => setModal("help")}>
+        <button className="nav-item" onClick={() => setView("help")}>
           <CircleHelp size={16} />
-          Help & getting started
-          <ArrowUpRight size={12} className="ml-auto text-zinc-700" />
+          Getting started
         </button>
       </div>
       <div className="flex items-center gap-2 border-t border-white/6 px-6 py-4 text-[10px] text-zinc-600">
-        <span className="size-1.5 rounded-full bg-emerald-400/80" />
-        Local starter<span className="ml-auto font-mono">v0.1.0</span>
+        <span className="size-1.5 rounded-full bg-emerald-400" />
+        Your code, in focus<span className="ml-auto font-mono">v0.2.0</span>
       </div>
     </>
   );
@@ -360,7 +493,7 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
               size="icon"
               className="lg:hidden"
               aria-label="Open navigation"
-              onClick={() => setModal("mobile")}
+              onClick={() => setView("mobile")}
             >
               <Menu />
             </Button>
@@ -370,46 +503,38 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 size={13}
                 className="hidden text-zinc-700 sm:block"
               />
-              <Github size={15} className="text-zinc-500" />
-              <span className="truncate text-zinc-300">
-                acme /{" "}
-                <span className="font-medium text-zinc-200">storefront</span>
-              </span>
-              <span className="hidden rounded border border-white/10 px-1.5 py-0.5 text-[9px] text-zinc-500 sm:inline">
-                Demo
-              </span>
+              <Github size={15} className="shrink-0 text-zinc-500" />
+              <span className="truncate text-zinc-300">{name}</span>
+              {demo && (
+                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[9px] text-zinc-500">
+                  Demo
+                </span>
+              )}
             </div>
             <div className="ml-auto flex items-center gap-3">
               <button
-                onClick={() => setModal("search")}
+                onClick={() => setView("search")}
                 className="search-trigger"
+                aria-label="Search workspace"
               >
                 <Search size={14} />
                 <span className="hidden sm:inline">Search your workspace…</span>
-                <kbd className="ml-6 hidden items-center gap-0.5 rounded border border-white/10 px-1 py-0.5 text-[9px] sm:flex">
-                  <Command size={9} />K
+                <kbd className="ml-4 hidden rounded border border-white/10 px-1 text-[9px] sm:inline">
+                  ⌘ K
                 </kbd>
               </button>
-              <span className="mx-1 hidden h-5 w-px bg-white/8 sm:block" />
-              {clerkEnabled ? (
-                <ClerkProfile />
-              ) : (
-                <button
-                  onClick={() => setModal("settings")}
-                  className="flex size-8 items-center justify-center rounded-full border border-violet-300/30 bg-gradient-to-br from-violet-500/40 to-fuchsia-300/10 text-[11px] font-medium text-violet-100"
-                  aria-label="Local workspace profile"
-                >
-                  CL
-                </button>
-              )}
+              <Account
+                enabled={clerkEnabled}
+                onIdentity={identityChanged}
+                onSettings={() => setView("settings")}
+              />
             </div>
           </header>
-
           <main id="main-content" className="dashboard-content">
             <motion.section
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.45 }}
+              transition={{ duration: 0.4 }}
               className="welcome-hero"
             >
               <Spotlight className="-right-[20%] -top-[150%]" />
@@ -426,21 +551,23 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 <p className="mt-3 text-[13px] leading-6 text-zinc-400">
                   Turn unfamiliar code into your next head start.
                 </p>
-                <form onSubmit={inspect} className="repo-input-wrap mt-6">
+                <form
+                  onSubmit={(event: FormEvent) => {
+                    event.preventDefault();
+                    analyze(repoUrl);
+                  }}
+                  className="repo-input-wrap mt-6"
+                >
                   <Github size={19} className="ml-4 shrink-0 text-zinc-500" />
                   <input
                     ref={repoInput}
-                    value={repoUrl}
-                    onChange={(e) => {
-                      setRepoUrl(e.target.value);
-                      setError("");
-                    }}
                     type="url"
                     required
                     maxLength={300}
+                    value={repoUrl}
+                    onChange={(event) => setRepoUrl(event.target.value)}
                     placeholder="Paste a public GitHub repository URL…"
                     aria-label="Public GitHub repository URL"
-                    aria-describedby={error ? "repo-error" : "repo-hint"}
                     className="h-12 min-w-0 flex-1 bg-transparent px-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600"
                   />
                   <Button
@@ -454,44 +581,16 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                       <Sparkles className="!size-3.5" />
                     )}
                     <span className="hidden sm:inline">
-                      {loading ? "Inspecting…" : "Inspect repository"}
+                      {loading ? "Starting…" : "Analyze repository"}
                     </span>
                     <ArrowRight className="!size-3.5 sm:hidden" />
                   </Button>
                 </form>
-                {loading && (
-                  <div role="status" className="mt-3">
-                    <div className="h-0.5 overflow-hidden rounded bg-white/5">
-                      <div className="indeterminate-progress h-full w-1/3 rounded bg-violet-400" />
-                    </div>
-                    <p className="mt-2 text-[10px] text-violet-300">
-                      Fetching public repository metadata and file tree…
-                    </p>
-                  </div>
-                )}
-                {error ? (
-                  <p
-                    id="repo-error"
-                    role="alert"
-                    className="mt-3 text-[11px] leading-5 text-rose-300"
-                  >
-                    {error}
-                  </p>
-                ) : (
-                  <p
-                    id="repo-hint"
-                    className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-600"
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <ShieldCheck size={11} />
-                      Public repositories only
-                    </span>
-                    <span className="text-zinc-700">·</span>
-                    <span>
-                      Live GitHub preview. AI assets below use sample data.
-                    </span>
-                  </p>
-                )}
+                <p className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-zinc-600">
+                  <ShieldCheck size={11} />
+                  Public repositories · Commit-pinned source snapshots · Likely
+                  secrets redacted
+                </p>
               </div>
               <div
                 className="orbital-illustration hidden xl:block"
@@ -516,42 +615,111 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 <span className="orbit-spark spark-b" />
               </div>
             </motion.section>
-
+            {error && (
+              <div
+                role="alert"
+                className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-rose-300/15 bg-rose-300/5 p-4 text-xs leading-5 text-rose-200"
+              >
+                <span>{error}</span>
+                <button aria-label="Dismiss error" onClick={() => setError("")}>
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-4">
               <div>
                 <div className="mb-1.5 flex items-center gap-2 text-[10px] text-zinc-600">
                   <span className="size-1.5 rounded-full bg-emerald-400/80" />
-                  EXAMPLE WORKSPACE<span className="px-1 text-zinc-700">/</span>
-                  <span className="font-mono">acme/storefront</span>
+                  {demo ? "EXAMPLE WORKSPACE" : "YOUR SOURCE SNAPSHOT"}
+                  <span className="px-1 text-zinc-700">/</span>
+                  <span className="font-mono">
+                    {data?.commitSha.slice(0, 7) ||
+                      (demo ? "acme/storefront" : active?.status || "Loading")}
+                  </span>
                 </div>
                 <h2 className="text-xl font-semibold tracking-[-0.6px]">
-                  {sectionTitles[section]}
+                  {section === "overview"
+                    ? "Repository overview"
+                    : navigation.find((item) => item.id === section)?.title}
                 </h2>
               </div>
               <div className="flex items-center gap-2">
-                <span className="mr-2 hidden items-center gap-1.5 rounded-md border border-white/8 bg-white/[0.02] px-2 py-1 text-[10px] text-zinc-500 sm:flex">
-                  <GitBranch size={11} />
-                  main
-                </span>
+                {!demo && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={loading || busy}
+                    onClick={() => analyze(active?.url || "")}
+                  >
+                    <RefreshCw className="!size-3.5" />
+                    Reanalyze
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    downloadText("storefront-README.md", demoReadme)
-                  }
+                  disabled={!readme}
+                  onClick={() => readme && downloadText("README.md", readme)}
                 >
                   <ArrowDownToLine className="!size-3.5" />
                   Export README
                 </Button>
               </div>
             </div>
-
+            {!demo && active && (
+              <div className="panel mb-5 px-5 py-4">
+                <div className="flex items-center gap-3">
+                  {busy ? (
+                    <LoaderCircle className="size-4 animate-spin text-violet-400" />
+                  ) : (
+                    <Check className="size-4 text-emerald-400" />
+                  )}
+                  <span role="status" className="flex-1 text-xs text-zinc-300">
+                    {active.stage}
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    {active.progress}%
+                  </span>
+                  {busy && (
+                    <Button variant="ghost" size="sm" onClick={cancel}>
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label="Repository analysis progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={active.progress}
+                  className="mt-3 h-1 overflow-hidden rounded bg-white/5"
+                >
+                  <motion.div
+                    animate={{ width: `${active.progress}%` }}
+                    className="h-full rounded bg-gradient-to-r from-violet-500 to-cyan-400"
+                  />
+                </div>
+                {active.error && (
+                  <p role="alert" className="mt-3 text-xs text-rose-300">
+                    {active.error}
+                  </p>
+                )}
+                {data?.warnings.map((warning) => (
+                  <p
+                    key={warning}
+                    className="mt-2 text-[11px] leading-5 text-zinc-500"
+                  >
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            )}
             <nav aria-label="Repository views" className="repo-tabs">
               {navigation.map(({ id, title, icon: Icon }) => (
                 <button
                   key={id}
+                  onClick={() => navigate(id)}
                   aria-current={section === id ? "page" : undefined}
-                  onClick={() => setSection(id)}
                   className={cn(
                     "repo-tab",
                     section === id && "repo-tab-active",
@@ -561,7 +729,7 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                   {title}
                   {id === "tour" && (
                     <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-zinc-500">
-                      4
+                      {coreFiles.length}
                     </span>
                   )}
                   {section === id && (
@@ -573,608 +741,643 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 </button>
               ))}
             </nav>
-
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
-                key={section}
+                key={`${section}:${selected}`}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
+                transition={{ duration: 0.18 }}
                 className="mt-6"
               >
-                {section === "overview" && (
+                {!demo && !data ? (
+                  <Empty
+                    title={
+                      busy
+                        ? "Bringing your codebase into focus…"
+                        : active?.status === "failed"
+                          ? "This analysis needs another try."
+                          : active?.status === "cancelled"
+                            ? "Analysis cancelled."
+                            : "Loading your repository…"
+                    }
+                    text={
+                      active?.error ||
+                      "Source files, code health signals, and framework detection will appear as the analysis progresses."
+                    }
+                  />
+                ) : (
                   <>
-                    <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-                      {[
-                        {
-                          icon: FileCode2,
-                          label: "Files in focus",
-                          value: demoRepository.files.toString(),
-                          note: "Across the repository",
-                          color: "violet",
-                        },
-                        {
-                          icon: Code2,
-                          label: "Lines of code",
-                          value: demoRepository.lines,
-                          note: "Every line, more context",
-                          color: "cyan",
-                        },
-                        {
-                          icon: Layers3,
-                          label: "Languages",
-                          value: "04",
-                          note: "TypeScript leads the way",
-                          color: "pink",
-                        },
-                        {
-                          icon: Activity,
-                          label: "Repository health",
-                          value: "85",
-                          unit: "/100",
-                          note: "Sample assessment",
-                          color: "green",
-                        },
-                      ].map(
-                        (
-                          { icon: Icon, label, value, note, color, unit },
-                          i,
-                        ) => (
-                          <motion.div
-                            initial={{ opacity: 0, y: 8 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: i * 0.05 }}
-                            key={label}
-                            className="stat-card"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11px] text-zinc-500">
-                                {label}
-                              </span>
-                              <span className={`stat-icon stat-${color}`}>
-                                <Icon size={15} />
-                              </span>
-                            </div>
-                            <div className="mt-3.5 flex items-baseline gap-1">
-                              <span className="text-[29px] font-semibold leading-none tracking-[-1px]">
-                                {value}
-                              </span>
-                              {unit && (
-                                <span className="text-[13px] text-zinc-600">
-                                  {unit}
-                                </span>
-                              )}
-                              <span className="ml-auto font-mono text-[9px] text-zinc-700">
-                                DEMO
-                              </span>
-                            </div>
-                            <p className="mt-2.5 text-[10px] text-zinc-600">
-                              {note}
-                            </p>
-                          </motion.div>
-                        ),
-                      )}
-                    </div>
-                    <div className="overview-grid">
-                      <Panel
-                        title="Architecture at a glance"
-                        icon={Network}
-                        action={
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSection("architecture")}
-                            className="!h-6 !px-1 !text-[10px]"
-                          >
-                            Explore map
-                            <ArrowUpRight className="!size-3" />
-                          </Button>
-                        }
-                      >
-                        <ArchitectureMap />
-                      </Panel>
-                      <Panel title="Code health" icon={ShieldCheck}>
-                        <HealthScore />
-                        <div className="mx-5 mb-4 border-t border-white/6 pt-3.5">
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-zinc-500">
-                              Illustrative assessment
-                            </span>
-                            <span className="rounded bg-emerald-400/5 px-1.5 py-0.5 text-emerald-400/70">
-                              Sample
-                            </span>
-                          </div>
-                        </div>
-                      </Panel>
-                      <Panel
-                        title="Your documentation"
-                        icon={FileText}
-                        action={
-                          <span className="rounded border border-emerald-400/15 bg-emerald-400/5 px-2 py-1 text-[9px] text-emerald-400/80">
-                            Sample ready
-                          </span>
-                        }
-                      >
-                        <button
-                          onClick={() => setSection("documentation")}
-                          className="group flex w-full items-start gap-4 p-5 text-left"
-                        >
-                          <span className="flex h-[76px] w-14 shrink-0 items-center justify-center rounded-lg border border-violet-300/10 bg-gradient-to-br from-violet-400/10 to-transparent text-violet-300/70">
-                            <FileText size={26} strokeWidth={1.2} />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-center gap-2 font-mono text-xs text-zinc-200">
-                              README.md
-                              <ArrowUpRight
-                                size={12}
-                                className="text-zinc-600 transition group-hover:text-violet-300"
-                              />
-                            </span>
-                            <span className="mt-2 block text-[11px] leading-5 text-zinc-500">
-                              The what, why, and how.
-                              <br />
-                              Everything a new contributor needs.
-                            </span>
-                            <span className="mt-2.5 block text-[10px] text-violet-400">
-                              Read documentation <span className="ml-1">→</span>
-                            </span>
-                          </span>
-                        </button>
-                      </Panel>
-                      <Panel title="Tech stack" icon={Boxes}>
-                        <div className="flex flex-wrap gap-2 px-5 pb-4 pt-5">
+                    {section === "overview" && (
+                      <>
+                        <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
                           {[
                             {
-                              label: "Next.js",
-                              color: "text-zinc-200",
-                              mark: "N",
+                              icon: FileCode2,
+                              label: "Files in focus",
+                              value: demo
+                                ? "128"
+                                : String(data?.files.length || 0),
+                              note: demo
+                                ? "Across the sample repository"
+                                : `of ${data?.repository.fileCount}${data?.repository.truncated ? "+" : ""} repository files`,
+                              color: "violet",
                             },
                             {
-                              label: "TypeScript",
-                              color: "text-sky-400",
-                              mark: "TS",
+                              icon: Code2,
+                              label: "Inspected lines",
+                              value: demo
+                                ? "12.4k"
+                                : (
+                                    data?.files.reduce(
+                                      (sum, file) => sum + file.lines,
+                                      0,
+                                    ) || 0
+                                  ).toLocaleString(),
+                              note: "Within the source snapshot",
+                              color: "cyan",
                             },
                             {
-                              label: "Tailwind",
-                              color: "text-cyan-300",
-                              mark: "≈",
+                              icon: Layers3,
+                              label: "Languages",
+                              value: demo
+                                ? "04"
+                                : String(
+                                    Object.keys(data?.languages || {}).length,
+                                  ),
+                              note: demo
+                                ? "TypeScript leads the way"
+                                : Object.entries(data?.languages || {}).sort(
+                                    (a, b) => b[1] - a[1],
+                                  )[0]?.[0] || "Source detected",
+                              color: "pink",
                             },
                             {
-                              label: "Prisma",
-                              color: "text-teal-300",
-                              mark: "△",
+                              icon: Activity,
+                              label: "Inspection score",
+                              value: String(score ?? "—"),
+                              note: demo
+                                ? "Sample assessment"
+                                : "Heuristic signals · Limited coverage",
+                              color: "green",
                             },
-                            {
-                              label: "PostgreSQL",
-                              color: "text-indigo-300",
-                              mark: "P",
-                            },
-                            {
-                              label: "Stripe",
-                              color: "text-violet-400",
-                              mark: "S",
-                            },
-                          ].map((tech) => (
-                            <span key={tech.label} className="tech-pill">
-                              <span
-                                className={cn(
-                                  "font-mono text-[10px] font-bold",
-                                  tech.color,
-                                )}
-                              >
-                                {tech.mark}
-                              </span>
-                              {tech.label}
-                            </span>
+                          ].map(({ icon: Icon, label, value, note, color }) => (
+                            <div className="stat-card" key={label}>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-zinc-500">
+                                  {label}
+                                </span>
+                                <span className={`stat-icon stat-${color}`}>
+                                  <Icon size={15} />
+                                </span>
+                              </div>
+                              <div className="mt-3.5 text-[29px] font-semibold leading-none tracking-[-1px]">
+                                {value}
+                              </div>
+                              <p className="mt-2.5 text-[10px] text-zinc-600">
+                                {note}
+                              </p>
+                            </div>
                           ))}
                         </div>
-                        <p className="px-5 pb-5 text-[10px] text-zinc-600">
-                          Example dependencies · Detection coming next
-                        </p>
-                      </Panel>
-                    </div>
-                    <section className="panel mt-5 overflow-hidden">
-                      <div className="panel-heading">
-                        <div className="flex items-center gap-2.5">
-                          <Braces size={16} className="text-zinc-400" />
-                          <h2>Good places to start</h2>
-                          <span className="ml-1 rounded bg-violet-500/10 px-1.5 py-0.5 text-[9px] text-violet-300">
-                            CODE TOUR
-                          </span>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSection("tour")}
-                          className="!h-6 !px-1 !text-[10px]"
-                        >
-                          Start exploring
-                          <ArrowRight className="!size-3" />
-                        </Button>
-                      </div>
-                      <div className="grid divide-y divide-white/6 md:grid-cols-3 md:divide-x md:divide-y-0">
-                        {coreFiles.slice(0, 3).map((file, i) => (
-                          <button
-                            key={file.path}
-                            onClick={() => {
-                              setTourFile(i);
-                              setSection("tour");
-                            }}
-                            className="group flex items-center gap-3 p-5 text-left transition hover:bg-white/[0.025]"
+                        <div className="overview-grid">
+                          <Panel
+                            title="Architecture at a glance"
+                            icon={Network}
+                            action={
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => navigate("architecture")}
+                                className="!h-6 !px-1 !text-[10px]"
+                              >
+                                Explore map
+                                <ArrowUpRight className="!size-3" />
+                              </Button>
+                            }
                           >
-                            <span className="font-mono text-[11px] text-zinc-700">
-                              0{i + 1}
-                            </span>
-                            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/6 bg-white/[0.025] text-violet-400/70">
-                              <FileCode2 size={15} />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block truncate font-mono text-[11px] text-zinc-300">
-                                {file.path.split("/").pop()}
-                              </span>
-                              <span className="mt-1 block text-[10px] text-zinc-600">
-                                {file.label}
-                              </span>
-                            </span>
-                            <ArrowUpRight
-                              size={12}
-                              className="ml-auto shrink-0 text-zinc-700 group-hover:text-violet-300"
+                            {diagram ? (
+                              <ArchitectureMap
+                                source={diagram}
+                                description={`System architecture for ${name}`}
+                              />
+                            ) : (
+                              <Empty
+                                title="An architecture map, grounded in your code."
+                                text="Configure Groq and reanalyze to generate this repository’s system diagram."
+                                onSetup={() => setView("settings")}
+                              />
+                            )}
+                          </Panel>
+                          <Panel title="Code health" icon={ShieldCheck}>
+                            <Health
+                              score={score || 0}
+                              demo={demo}
+                              findings={data?.findings.length || 0}
                             />
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                    <button
-                      onClick={() => setChatOpen(true)}
-                      className="assistant-banner group mt-5 flex w-full items-center gap-4 rounded-xl border border-violet-400/15 px-5 py-4 text-left"
-                    >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-violet-400/20 bg-violet-500/10 text-violet-300">
-                        <Sparkles size={18} />
-                      </span>
-                      <span className="flex-1">
-                        <span className="text-xs font-medium text-zinc-200">
-                          Every codebase has a story. Ask yours.
-                        </span>
-                        <span className="mt-1 block text-[11px] text-zinc-500">
-                          Try “How does the database connection work?” in the
-                          demo assistant.
-                        </span>
-                      </span>
-                      <span className="hidden items-center gap-2 text-[11px] text-violet-300 sm:flex">
-                        Let’s talk
-                        <ArrowRight
-                          size={14}
-                          className="transition-transform group-hover:translate-x-1"
-                        />
-                      </span>
-                    </button>
-                  </>
-                )}
-                {section === "architecture" && (
-                  <Panel
-                    title="System architecture"
-                    icon={Network}
-                    action={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          downloadText(
-                            "storefront-architecture.mmd",
-                            architecture,
+                            <div className="mx-5 mb-4 border-t border-white/6 pt-3 text-[10px] leading-5 text-zinc-500">
+                              {demo
+                                ? "Illustrative assessment"
+                                : "Pattern-based checks on inspected files. This score does not certify security; excluded files and undetected secrets remain possible."}
+                            </div>
+                          </Panel>
+                          <Panel
+                            title="Your documentation"
+                            icon={FileText}
+                            action={
+                              <span className="text-[9px] text-violet-300">
+                                {demo
+                                  ? "Sample"
+                                  : assets
+                                    ? "AI generated"
+                                    : "Repository source"}
+                              </span>
+                            }
+                          >
+                            <button
+                              onClick={() => navigate("documentation")}
+                              className="group flex w-full items-start gap-4 p-5 text-left"
+                            >
+                              <span className="flex h-[76px] w-14 shrink-0 items-center justify-center rounded-lg border border-violet-300/10 bg-violet-400/5 text-violet-300/70">
+                                <FileText size={26} strokeWidth={1.2} />
+                              </span>
+                              <span>
+                                <span className="font-mono text-xs text-zinc-200">
+                                  README.md
+                                </span>
+                                <span className="mt-2 block text-[11px] leading-5 text-zinc-500">
+                                  {readme
+                                    ? "The what, why, and how.\nYour starting point in this codebase."
+                                    : "Generate a contributor-ready README with Groq."}
+                                </span>
+                                <span className="mt-3 block text-[10px] text-violet-400">
+                                  Open documentation →
+                                </span>
+                              </span>
+                            </button>
+                          </Panel>
+                          <Panel title="Tech stack" icon={Boxes}>
+                            <div className="flex flex-wrap gap-2 px-5 pb-4 pt-5">
+                              {techStack.map((tech, index) => (
+                                <span key={tech} className="tech-pill">
+                                  <span
+                                    className={
+                                      index % 2
+                                        ? "text-cyan-300"
+                                        : "text-violet-300"
+                                    }
+                                  >
+                                    ✳
+                                  </span>
+                                  {tech}
+                                </span>
+                              ))}
+                              {!techStack.length && (
+                                <span className="text-xs text-zinc-500">
+                                  No recognized framework manifests in the
+                                  inspected files.
+                                </span>
+                              )}
+                            </div>
+                            <p className="px-5 pb-5 text-[10px] text-zinc-600">
+                              {demo
+                                ? "Example dependencies"
+                                : "Detected from inspected dependency manifests"}
+                            </p>
+                          </Panel>
+                        </div>
+                        <Panel
+                          title="Good places to start"
+                          icon={Braces}
+                          className="mt-5"
+                          action={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => navigate("tour")}
+                            >
+                              Explore files
+                              <ArrowRight />
+                            </Button>
+                          }
+                        >
+                          <div className="grid divide-y divide-white/6 md:grid-cols-3 md:divide-x md:divide-y-0">
+                            {coreFiles.slice(0, 3).map((file, index) => (
+                              <button
+                                key={file.path}
+                                onClick={() => {
+                                  setTourFile(index);
+                                  navigate("tour");
+                                }}
+                                className="flex min-w-0 items-center gap-3 p-5 text-left hover:bg-white/[0.025]"
+                              >
+                                <span className="font-mono text-[11px] text-zinc-700">
+                                  0{index + 1}
+                                </span>
+                                <FileCode2
+                                  size={18}
+                                  className="shrink-0 text-violet-400/70"
+                                />
+                                <span className="min-w-0">
+                                  <span className="block truncate font-mono text-[11px] text-zinc-300">
+                                    {file.path.split("/").pop()}
+                                  </span>
+                                  <span className="mt-1 block text-[10px] text-zinc-600">
+                                    {file.label}
+                                  </span>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </Panel>
+                        {!demo && Boolean(data?.findings.length) && (
+                          <Panel
+                            title="Signals to investigate"
+                            icon={ShieldCheck}
+                            className="mt-5"
+                          >
+                            <div className="divide-y divide-white/5">
+                              {data?.findings
+                                .slice(0, 10)
+                                .map((finding, index) => (
+                                  <div
+                                    key={index}
+                                    className="flex items-start gap-3 px-5 py-4"
+                                  >
+                                    <span
+                                      className={cn(
+                                        "mt-0.5 rounded px-2 py-0.5 text-[9px] uppercase",
+                                        finding.severity === "high"
+                                          ? "bg-rose-400/10 text-rose-300"
+                                          : "bg-amber-400/10 text-amber-300",
+                                      )}
+                                    >
+                                      {finding.severity}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <p className="break-words font-mono text-[10px] text-zinc-400">
+                                        {finding.path}:{finding.line}
+                                      </p>
+                                      <p className="mt-1 text-xs leading-5 text-zinc-500">
+                                        {finding.message}
+                                      </p>
+                                    </div>
+                                  </div>
+                                ))}
+                            </div>
+                          </Panel>
+                        )}
+                        <button
+                          onClick={() => setChat(true)}
+                          className="assistant-banner mt-5 flex w-full items-center gap-4 rounded-xl border border-violet-400/15 px-5 py-4 text-left"
+                        >
+                          <span className="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-300">
+                            <Sparkles size={18} />
+                          </span>
+                          <span className="flex-1">
+                            <span className="text-xs text-zinc-200">
+                              Every codebase has a story. Ask yours.
+                            </span>
+                            <span className="mt-1 block text-[11px] text-zinc-500">
+                              {demo
+                                ? "Try a sample conversation."
+                                : data?.namespace && config.groq
+                                  ? "Answers grounded in your indexed source, with citations."
+                                  : "Connect Groq and Pinecone to enable codebase conversations."}
+                            </span>
+                          </span>
+                          <ArrowRight size={15} className="text-violet-300" />
+                        </button>
+                      </>
+                    )}
+                    {section === "architecture" && (
+                      <Panel
+                        title="System architecture"
+                        icon={Network}
+                        action={
+                          diagram && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                downloadText("architecture.mmd", diagram)
+                              }
+                            >
+                              <ArrowDownToLine />
+                              Export Mermaid
+                            </Button>
                           )
                         }
                       >
-                        <ArrowDownToLine />
-                        Export Mermaid
-                      </Button>
-                    }
-                  >
-                    <ArchitectureMap expanded />
-                    <div className="border-t border-white/8 px-6 py-5 text-xs leading-6 text-zinc-500">
-                      This sample maps the storefront’s presentation layer,
-                      server routes, and external services. AI-generated
-                      architecture will be connected in a later iteration.
-                    </div>
-                  </Panel>
+                        {diagram ? (
+                          <>
+                            <ArchitectureMap
+                              expanded
+                              source={diagram}
+                              description={`Architecture for ${name}`}
+                            />
+                            <p className="border-t border-white/8 p-5 text-xs leading-6 text-zinc-500">
+                              {demo
+                                ? "Sample system architecture."
+                                : `Generated from the inspected source at commit ${data?.commitSha.slice(0, 7)}. Review inferred relationships against the source.`}
+                            </p>
+                          </>
+                        ) : (
+                          <Empty
+                            title="Architecture generation needs Groq."
+                            text="Add your Groq key in the server environment and reanalyze this repository."
+                            onSetup={() => setView("settings")}
+                          />
+                        )}
+                      </Panel>
+                    )}
+                    {section === "documentation" && (
+                      <Panel
+                        title="README.md"
+                        icon={FileText}
+                        action={
+                          <span className="text-[10px] text-zinc-500">
+                            {demo
+                              ? "Sample"
+                              : assets
+                                ? assets.generatedBy
+                                : "Original repository README"}
+                          </span>
+                        }
+                      >
+                        {readme ? (
+                          <article className="mx-auto max-w-[850px] p-6 sm:p-10">
+                            <Markdown>{readme}</Markdown>
+                          </article>
+                        ) : (
+                          <Empty
+                            title="A README is waiting to be written."
+                            text="No README was found in this bounded snapshot. Configure Groq and reanalyze to generate one."
+                            onSetup={() => setView("settings")}
+                          />
+                        )}
+                      </Panel>
+                    )}
+                    {section === "tour" && (
+                      <CodeTour
+                        key={`${selected}:${coreFiles.length}:${tourFile}`}
+                        initialFile={tourFile}
+                        files={coreFiles}
+                        demo={demo}
+                      />
+                    )}
+                    {section === "deploy" && (
+                      <DeployGuide
+                        demo={demo}
+                        guides={assets?.deployment}
+                        onSetup={() => setView("settings")}
+                      />
+                    )}
+                  </>
                 )}
-                {section === "documentation" && (
-                  <Panel
-                    title="README.md"
-                    icon={FileText}
-                    action={
-                      <span className="text-[10px] text-zinc-500">
-                        Rendered Markdown · Sample
-                      </span>
-                    }
-                  >
-                    <article className="mx-auto max-w-[850px] p-6 sm:p-10">
-                      <Markdown>{demoReadme}</Markdown>
-                    </article>
-                  </Panel>
-                )}
-                {section === "tour" && <CodeTour initialFile={tourFile} />}
-                {section === "deploy" && <DeployGuide />}
               </motion.div>
             </AnimatePresence>
-            <footer className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-white/5 pt-5 text-[10px] text-zinc-600">
+            <footer className="mb-3 mt-8 flex items-center justify-between gap-3 border-t border-white/5 pt-5 text-[10px] text-zinc-600">
               <span>Less digging. More building.</span>
-              <span className="flex items-center gap-1.5">
-                Made for curious developers
-                <span className="ml-2 text-violet-400/60">✳</span>
-              </span>
+              <button
+                onClick={() => setView("files")}
+                className="flex items-center gap-1.5 hover:text-zinc-300"
+              >
+                <FileCode2 size={11} />
+                {demo ? "Sample workspace" : "Inspect source coverage"}
+              </button>
             </footer>
           </main>
         </div>
-
         <AnimatePresence>
-          {!chatOpen && (
+          {!chat && (
             <motion.div
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9 }}
+              exit={{ opacity: 0 }}
               className="fixed bottom-6 right-6 z-30"
             >
               <Button
                 size="lg"
-                onClick={() => setChatOpen(true)}
-                className="chat-launcher !h-12 !rounded-full !pl-4 !pr-5"
+                onClick={() => setChat(true)}
+                className="chat-launcher !h-12 !rounded-full !px-5"
               >
-                <Sparkles className="!size-[18px]" />
+                <Sparkles />
                 Ask CodeLens
-                <span className="ml-1 flex size-4 items-center justify-center rounded-full bg-white/10">
-                  <Plus className="!size-2.5" />
-                </span>
+                <Plus className="ml-1 !size-3" />
               </Button>
             </motion.div>
           )}
         </AnimatePresence>
-        <ChatDrawer open={chatOpen} onOpenChange={setChatOpen} />
-
+        <ChatDrawer
+          key={selected || "demo"}
+          open={chat}
+          onOpenChange={setChat}
+          repositoryId={selected}
+          repositoryName={name}
+          ready={Boolean(
+            active?.status === "ready" && data?.namespace && config.groq,
+          )}
+        />
         <Modal
-          open={modal === "mobile"}
-          onOpenChange={(open) => !open && setModal(null)}
+          open={view === "mobile"}
+          onOpenChange={(open) => !open && setView(null)}
           title="Your workspace"
-          description="Navigate your CodeLens demo workspace."
+          description="Explore your codebase."
         >
-          <div className="flex flex-col gap-1">
-            {navigation.map(({ id, title, icon: Icon }) => (
-              <button
-                key={id}
-                className="nav-item"
-                onClick={() => navigate(id)}
-              >
-                <Icon size={17} />
-                {title}
-              </button>
-            ))}
-            <Button variant="outline" onClick={focusRepo} className="mt-4">
-              <Plus />
-              Inspect a repository
-            </Button>
-            <Button variant="ghost" onClick={() => setModal("settings")}>
-              <Settings2 />
-              Workspace settings
-            </Button>
+          <div className="flex max-h-[60dvh] flex-col overflow-auto">
+            {sidebar}
           </div>
         </Modal>
         <Modal
-          open={modal === "search"}
-          onOpenChange={(open) => !open && setModal(null)}
-          title="Find your focus"
-          description="Jump to a workspace view or inspect a repository."
-        >
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3">
-            <Search size={15} className="text-zinc-500" />
-            <input
-              aria-label="Search workspace views"
-              placeholder="Search views…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-zinc-600"
-            />
-          </div>
-          <div className="space-y-1">
-            {navigation
-              .filter((item) =>
-                item.title.toLowerCase().includes(search.toLowerCase()),
-              )
-              .map(({ id, title, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => navigate(id)}
-                  className="nav-item"
-                >
-                  <Icon size={16} />
-                  {title}
-                  <ArrowRight size={13} className="ml-auto" />
-                </button>
-              ))}
-            {navigation.filter((item) =>
-              item.title.toLowerCase().includes(search.toLowerCase()),
-            ).length === 0 && (
-              <p className="py-4 text-center text-sm text-zinc-500">
-                No matching views.
-              </p>
-            )}
-            <Button
-              variant="outline"
-              className="mt-4 w-full"
-              onClick={focusRepo}
-            >
-              <Github />
-              Inspect a public repository
-            </Button>
-          </div>
-        </Modal>
-        <Modal
-          open={modal === "settings"}
-          onOpenChange={(open) => !open && setModal(null)}
-          title="Workspace settings"
-          description="Your local dashboard is ready. Configure integrations on the server when you are ready to connect your services."
+          open={view === "settings"}
+          onOpenChange={(open) => !open && setView(null)}
+          title="Workspace integrations"
+          description="Connection status reflects the server configuration. New credentials take effect after restarting the server; reanalyze a repository to generate missing assets."
         >
           <div className="space-y-3">
             {[
               {
-                title: "Authentication",
-                value: clerkEnabled
-                  ? "Clerk configured"
-                  : "Local demo · Clerk keys needed",
-                icon: ShieldCheck,
+                label: "Clerk authentication",
+                value: config.clerk
+                  ? "Configured · Sign in to access your data"
+                  : config.local
+                    ? "Development workspace · No sign-in required"
+                    : "Required before production use",
               },
               {
-                title: "Repository preview",
-                value: "GitHub REST API · Connected",
-                icon: Github,
+                label: "Groq generation",
+                value: config.groq
+                  ? "Configured"
+                  : "Setup needed · GROQ_API_KEY",
               },
               {
-                title: "AI generation & RAG",
-                value: "Not connected · Next iteration",
-                icon: Sparkles,
+                label: "Pinecone retrieval",
+                value: config.pinecone
+                  ? "Configured"
+                  : "Setup needed · PINECONE_API_KEY + PINECONE_INDEX",
               },
               {
-                title: "Appearance",
-                value: "Deep space · Dark mode",
-                icon: Layers3,
+                label: "Saved workspace",
+                value:
+                  config.database === "postgresql"
+                    ? "PostgreSQL"
+                    : "SQLite · Local persistent storage",
               },
             ].map((item) => (
               <div
-                key={item.title}
-                className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.02] p-3.5"
+                key={item.label}
+                className="rounded-lg border border-white/8 p-3.5"
               >
-                <item.icon size={17} className="text-violet-400" />
-                <div>
-                  <p className="text-xs text-zinc-200">{item.title}</p>
-                  <p className="mt-1 text-[11px] text-zinc-500">{item.value}</p>
-                </div>
+                <p className="text-xs text-zinc-200">{item.label}</p>
+                <p className="mt-1.5 text-[11px] leading-5 text-zinc-500">
+                  {item.value}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-5 text-[11px] leading-5 text-zinc-500">
+            Configure secrets in .env.local or your hosting provider. Keys are
+            never stored in the browser.
+          </p>
+        </Modal>
+        <Modal
+          open={view === "search"}
+          onOpenChange={(open) => !open && setView(null)}
+          title="Find your focus"
+          description="Search repository history and workspace views."
+        >
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-white/10 px-3">
+            <Search size={15} className="text-zinc-500" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              aria-label="Search workspace"
+              placeholder="Find a view or repository…"
+              className="h-11 w-full bg-transparent text-sm outline-none"
+            />
+          </div>
+          <div className="max-h-80 overflow-auto">
+            {navigation
+              .filter((item) =>
+                item.title.toLowerCase().includes(search.toLowerCase()),
+              )
+              .map((item) => (
+                <button
+                  key={item.id}
+                  className="nav-item"
+                  onClick={() => navigate(item.id)}
+                >
+                  <item.icon size={16} />
+                  {item.title}
+                </button>
+              ))}
+            {history
+              .filter((repo) =>
+                repo.name.toLowerCase().includes(search.toLowerCase()),
+              )
+              .map((repo) => (
+                <button
+                  key={repo.id}
+                  className="nav-item"
+                  onClick={() => select(repo.id)}
+                >
+                  <Github size={16} />
+                  {repo.name}
+                </button>
+              ))}
+          </div>
+        </Modal>
+        <Modal
+          open={view === "files"}
+          onOpenChange={(open) => !open && setView(null)}
+          title="Source coverage"
+          description={
+            demo
+              ? "Select a real repository to inspect its source coverage."
+              : `${data?.files.length || 0} source files inspected at ${data?.commitSha.slice(0, 7) || "the current snapshot"}.`
+          }
+        >
+          <div className="max-h-80 overflow-auto space-y-2 font-mono text-[11px] text-zinc-400">
+            {data?.files.map((file) => (
+              <div key={file.path} className="flex justify-between gap-3">
+                <span className="break-all">{file.path}</span>
+                <span className="shrink-0 text-zinc-600">
+                  {file.lines} lines
+                </span>
               </div>
             ))}
           </div>
         </Modal>
         <Modal
-          open={modal === "help"}
-          onOpenChange={(open) => !open && setModal(null)}
-          title="A clearer path through code."
-          description="This first iteration gives you the workspace shell and a real public repository preview."
+          open={view === "help"}
+          onOpenChange={(open) => !open && setView(null)}
+          title="Bring a codebase into focus."
+          description="Paste a public GitHub URL to create a saved source snapshot. Follow real progress as files are fetched, redacted, inspected, and chunked."
         >
-          <ol className="space-y-5 text-sm text-zinc-400">
-            {[
-              "Explore the sample architecture, README, and four-file code tour.",
-              "Paste a public GitHub URL to inspect live metadata and the file tree.",
-              "Open the assistant to try clearly labeled sample conversations.",
-              "Follow README.md to configure Clerk and build the Groq/Pinecone pipeline next.",
-            ].map((text, i) => (
-              <li key={text} className="flex gap-3">
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-violet-500/10 font-mono text-[10px] text-violet-300">
-                  0{i + 1}
-                </span>
-                <span className="leading-6">{text}</span>
-              </li>
-            ))}
+          <ol className="list-decimal space-y-4 pl-5 text-sm leading-6 text-zinc-400">
+            <li>
+              Browse source files, detected frameworks, and heuristic health
+              signals without paid services.
+            </li>
+            <li>
+              Configure Groq to generate documentation, architecture, file
+              explanations, and deployment guides.
+            </li>
+            <li>
+              Configure a Pinecone vector index and its hosted embedding model
+              to enable cited codebase chat.
+            </li>
+            <li>
+              Use Clerk and PostgreSQL for a hosted workspace with per-user
+              history and saved conversations.
+            </li>
           </ol>
         </Modal>
         <Modal
-          open={modal === "upgrade"}
-          onOpenChange={(open) => !open && setModal(null)}
+          open={view === "upgrade"}
+          onOpenChange={(open) => !open && setView(null)}
           title="More room for your next big idea."
-          description="CodeLens Pro is a preview of where we’re heading. Billing is not connected in this starter."
+          description="Pro is a product preview. Billing is not connected."
         >
-          <div className="rounded-xl border border-violet-400/20 bg-violet-500/5 p-5">
-            <div className="flex items-center gap-2 text-violet-200">
-              <Zap size={18} />
-              <span className="font-medium">Pro workspace</span>
-              <span className="ml-auto text-[10px] uppercase tracking-widest text-violet-400">
-                Coming soon
-              </span>
-            </div>
-            <div className="mt-5 space-y-3">
-              {[
-                "Larger repository indexing",
-                "More codebase conversations",
-                "Shared team knowledge",
-                "Deeper architecture insights",
-              ].map((item) => (
-                <p
-                  className="flex items-center gap-2 text-sm text-zinc-400"
-                  key={item}
-                >
-                  <Check size={14} className="text-violet-400" />
-                  {item}
-                </p>
-              ))}
-            </div>
+          <div className="space-y-4 rounded-xl border border-violet-400/20 bg-violet-500/5 p-5">
+            {[
+              "Larger source snapshots",
+              "Shared team workspaces",
+              "Higher conversation limits",
+              "Deeper architecture insights",
+            ].map((text) => (
+              <p
+                className="flex items-center gap-2 text-sm text-zinc-400"
+                key={text}
+              >
+                <Check size={14} className="text-violet-400" />
+                {text}
+              </p>
+            ))}
           </div>
-          <Button className="mt-5 w-full" onClick={() => setModal(null)}>
-            Keep exploring the starter
-            <ArrowRight />
-          </Button>
-        </Modal>
-        <Modal
-          open={Boolean(preview)}
-          onOpenChange={(open) => !open && setPreview(null)}
-          title={preview?.fullName || "Repository preview"}
-          description={
-            preview?.description || "Public GitHub repository metadata"
-          }
-        >
-          {preview && (
-            <>
-              <div className="mb-5 flex flex-wrap gap-2">
-                {[
-                  `${preview.fileCount}${preview.truncated ? "+" : ""} files`,
-                  preview.language || "No primary language",
-                  `${preview.stars.toLocaleString()} stars`,
-                  preview.branch,
-                ].map((text, i) => (
-                  <span key={i} className="tech-pill">
-                    {text}
-                  </span>
-                ))}
-              </div>
-              <p className="mb-3 text-xs font-medium text-zinc-300">
-                File tree preview
-              </p>
-              <div className="max-h-52 overflow-auto rounded-lg border border-white/8 bg-black/20 p-3 font-mono text-[10px] leading-6 text-zinc-500">
-                {preview.paths.map((path) => (
-                  <div key={path} className="flex items-center gap-2">
-                    <FileCode2
-                      size={11}
-                      className="shrink-0 text-violet-400/60"
-                    />
-                    <span>{path}</span>
-                  </div>
-                ))}
-              </div>
-              <p className="my-4 text-[11px] leading-5 text-zinc-500">
-                Live metadata and up to 60 file paths.{" "}
-                {preview.truncated &&
-                  "GitHub returned a truncated tree; the file count is a lower bound. "}
-                File contents, embeddings, and AI analysis are not generated
-                yet. The dashboard continues to show the sample storefront.
-              </p>
-              <Button asChild variant="outline" className="w-full">
-                <a href={preview.url} target="_blank" rel="noopener noreferrer">
-                  View on GitHub
-                  <ExternalLink />
-                </a>
-              </Button>
-            </>
-          )}
         </Modal>
       </div>
     </MotionConfig>
   );
 }
 
-function HealthScore() {
+function Health({
+  score,
+  demo,
+  findings,
+}: {
+  score: number;
+  demo: boolean;
+  findings: number;
+}) {
   return (
-    <div className="flex items-center gap-4 px-5 pb-4 pt-5">
+    <div className="flex items-center gap-5 px-5 pb-4 pt-5">
       <div className="health-ring relative size-[115px] shrink-0">
         <svg
           viewBox="0 0 120 120"
           className="size-full -rotate-90"
-          aria-label="Sample repository health: 85 out of 100"
+          aria-label={`${demo ? "Sample" : "Heuristic inspection"} score ${score} out of 100`}
           role="img"
         >
           <circle
@@ -1195,8 +1398,8 @@ function HealthScore() {
             strokeLinecap="round"
             strokeDasharray="301.59"
             initial={{ strokeDashoffset: 301.59 }}
-            animate={{ strokeDashoffset: 45.24 }}
-            transition={{ duration: 1.2, ease: "easeOut" }}
+            animate={{ strokeDashoffset: 301.59 * (1 - score / 100) }}
+            transition={{ duration: 1 }}
           />
           <defs>
             <linearGradient id="health-gradient">
@@ -1206,93 +1409,93 @@ function HealthScore() {
           </defs>
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[30px] font-semibold leading-none tracking-[-1.5px]">
-            85
-            <span className="ml-0.5 text-xs font-normal tracking-normal text-zinc-600">
+          <span className="text-[30px] font-semibold tracking-[-1.5px]">
+            {score}
+            <span className="ml-1 text-xs tracking-normal text-zinc-600">
               /100
             </span>
           </span>
-          <span className="mt-2 text-[9px] text-emerald-400/80">
-            Looking good
+          <span className="text-[9px] text-violet-300">
+            {demo ? "Sample score" : "Inspected files"}
           </span>
         </div>
       </div>
-      <div className="min-w-0 space-y-3.5">
-        {[
-          { label: "Maintainability", score: "90", color: "bg-violet-400" },
-          { label: "Code structure", score: "86", color: "bg-cyan-400" },
-          { label: "Security signals", score: "79", color: "bg-amber-300" },
-        ].map((item) => (
-          <div key={item.label}>
-            <div className="flex items-center gap-2 text-[10px]">
-              <span className={cn("size-1 rounded-full", item.color)} />
-              <span className="text-zinc-500">{item.label}</span>
-              <span className="ml-auto font-mono text-zinc-400">
-                {item.score}
-              </span>
-            </div>
-          </div>
-        ))}
+      <div className="space-y-3 text-[11px] text-zinc-500">
+        <p>
+          <span className="mr-2 text-violet-400">●</span>
+          {demo ? "Illustrative signals" : `${findings} signals found`}
+        </p>
+        <p>
+          <span className="mr-2 text-cyan-400">●</span>Source-aware checks
+        </p>
+        <p>
+          <span className="mr-2 text-amber-300">●</span>Review recommended
+        </p>
       </div>
     </div>
   );
 }
-
-function DeployGuide() {
+function DeployGuide({
+  demo,
+  guides,
+  onSetup,
+}: {
+  demo: boolean;
+  guides?: { vercel: string; docker: string; aws: string };
+  onSetup: () => void;
+}) {
   const [target, setTarget] = useState<"vercel" | "docker" | "aws">("vercel");
-  const guides = {
+  const sample = {
     vercel:
-      "## Deploy the sample storefront to Vercel\n\n1. Push the application to your own GitHub repository.\n2. Import it in Vercel and select the **Next.js** framework preset.\n3. Add your database, Clerk, and Stripe environment variables.\n4. Configure Prisma generation during the build and apply migrations in a controlled release step.\n5. Deploy, then register your production URL with Clerk and your verified Stripe webhook endpoint.\n\n```bash\nnpm run build\n```",
+      "## Vercel · Sample storefront\n\n1. Import the Next.js repository in Vercel.\n2. Configure database, Clerk, and payment environment variables.\n3. Generate Prisma's client in the build and apply migrations as a release step.\n4. Deploy and verify the production domain and webhook configuration.",
     docker:
-      "## Containerize the sample storefront\n\n1. Enable `output: 'standalone'` in your Next.js configuration.\n2. Create a multi-stage Dockerfile: install dependencies, generate Prisma, and build in the builder stage.\n3. Copy the standalone server, static assets, and public assets into a Node.js runtime image.\n4. Configure `HOSTNAME=0.0.0.0` and provide secrets through your deployment platform.\n5. Run database migrations as a separate release task before starting the service.\n\n```bash\n# After authoring your Dockerfile\ndocker build -t storefront .\ndocker run --env-file .env.production -p 3000:3000 storefront\n```",
-    aws: "## Host the sample storefront on AWS\n\n1. Build a production container and publish it to **Amazon ECR**.\n2. Provision PostgreSQL in RDS and restrict access to your application network.\n3. Create an ECS Fargate service with an Application Load Balancer.\n4. Inject database, Clerk, and Stripe credentials through AWS Secrets Manager.\n5. Run migrations as a release task, configure health checks, and connect your HTTPS domain.\n\nThis is a planning outline; exact networking, IAM roles, sizing, and infrastructure depend on your deployment requirements.",
+      "## Docker · Sample storefront\n\n1. Enable Next.js standalone output.\n2. Build with a multi-stage Dockerfile and copy the standalone server, static assets, and public directory.\n3. Inject runtime credentials and expose port 3000.\n4. Run database migrations in a release job.",
+    aws: "## AWS · Sample storefront\n\n1. Publish a production container to ECR.\n2. Provision an RDS PostgreSQL database.\n3. Deploy an ECS Fargate service behind an HTTPS load balancer.\n4. Supply credentials through Secrets Manager and verify application health.",
   };
+  const value = demo ? sample[target] : guides?.[target];
   return (
     <Panel
       title="Your launch checklist"
       icon={Rocket}
       action={
-        <span className="text-[10px] text-zinc-500">Illustrative guide</span>
+        <span className="text-[10px] text-zinc-500">
+          {demo ? "Sample guide" : "AI generated · Review before use"}
+        </span>
       }
     >
-      <div className="flex flex-wrap gap-2 border-b border-white/8 px-6 py-4">
-        {(["vercel", "docker", "aws"] as const).map((value) => (
+      <div className="flex gap-2 border-b border-white/8 p-4">
+        {(["vercel", "docker", "aws"] as const).map((item) => (
           <Button
-            variant={target === value ? "default" : "outline"}
+            key={item}
+            variant={target === item ? "default" : "outline"}
             size="sm"
-            key={value}
-            onClick={() => setTarget(value)}
+            onClick={() => setTarget(item)}
           >
-            {value === "vercel" ? (
-              <span className="text-xs">▲</span>
-            ) : value === "docker" ? (
-              <Boxes />
-            ) : (
-              <Terminal />
-            )}
-            {value === "aws"
+            {item === "aws"
               ? "AWS"
-              : value.charAt(0).toUpperCase() + value.slice(1)}
+              : item.charAt(0).toUpperCase() + item.slice(1)}
           </Button>
         ))}
       </div>
-      <div className="max-w-[820px] p-6 sm:p-9">
-        <p className="mb-6 rounded-lg border border-amber-300/10 bg-amber-300/[0.025] p-3 text-[11px] leading-5 text-zinc-500">
-          Sample checklist for the fictional storefront. Custom deployment
-          generation and one-click deployment are not connected.
-        </p>
-        <Markdown>{guides[target]}</Markdown>
-        <Button
-          variant="outline"
-          className="mt-6"
-          onClick={() =>
-            downloadText(`storefront-deploy-${target}.md`, guides[target])
-          }
-        >
-          <ArrowDownToLine />
-          Download guide
-        </Button>
-      </div>
+      {value ? (
+        <article className="max-w-[850px] p-6 sm:p-9">
+          <Markdown>{value}</Markdown>
+          <Button
+            variant="outline"
+            className="mt-5"
+            onClick={() => downloadText(`deploy-${target}.md`, value)}
+          >
+            <ArrowDownToLine />
+            Download guide
+          </Button>
+        </article>
+      ) : (
+        <Empty
+          title="A launch plan for this repository."
+          text="Configure Groq and reanalyze to generate architecture-specific guidance. No deployment is performed automatically."
+          onSetup={onSetup}
+        />
+      )}
     </Panel>
   );
 }

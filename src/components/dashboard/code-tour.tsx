@@ -9,14 +9,30 @@ import {
   FileCode2,
   Lightbulb,
 } from "lucide-react";
-import { coreFiles } from "@/lib/demo";
+import { coreFiles as demoFiles } from "@/lib/demo";
+import type { CoreFile } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "./markdown";
 
-export function CodeTour({ initialFile = 0 }: { initialFile?: number }) {
+export function CodeTour({
+  initialFile = 0,
+  files = demoFiles,
+  demo = true,
+}: {
+  initialFile?: number;
+  files?: CoreFile[];
+  demo?: boolean;
+}) {
   const [selected, setSelected] = useState(initialFile);
+  const coreFiles = files;
   const [copyStatus, setCopyStatus] = useState("");
-  const file = coreFiles[selected];
+  const file = coreFiles[Math.min(selected, coreFiles.length - 1)];
+  if (!file)
+    return (
+      <div className="panel p-8 text-sm text-zinc-500">
+        Source files will appear here after ingestion.
+      </div>
+    );
   async function copy() {
     try {
       await navigator.clipboard.writeText(file.code);
@@ -33,7 +49,8 @@ export function CodeTour({ initialFile = 0 }: { initialFile?: number }) {
           <h2>Follow the code</h2>
         </div>
         <span className="text-xs text-zinc-500">
-          {selected + 1} of {coreFiles.length} core files · Sample
+          {selected + 1} of {coreFiles.length} core files ·{" "}
+          {demo ? "Sample" : "Source snapshot"}
         </span>
       </div>
       <div className="grid lg:grid-cols-[230px_minmax(0,1fr)]">
@@ -97,7 +114,9 @@ export function CodeTour({ initialFile = 0 }: { initialFile?: number }) {
           </div>
           <div className="flex items-center justify-between border-t border-white/8 px-5 py-4">
             <span className="text-[11px] text-zinc-500">
-              Illustrative code from the demo repository
+              {demo
+                ? "Illustrative code from the demo repository"
+                : "Redacted source from the pinned commit"}
             </span>
             <Button
               variant="outline"

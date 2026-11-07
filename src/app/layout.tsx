@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
+// Resolve server credentials at request time, including in standalone containers.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "CodeLens — Understand your codebase",
   description:
