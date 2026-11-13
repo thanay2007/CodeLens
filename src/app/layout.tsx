@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ClerkProvider } from "@clerk/nextjs";
+import { WorkspaceClerkProvider } from "@/components/auth/workspace-clerk-provider";
 import "./globals.css";
 
 // Resolve server credentials at request time, including in standalone containers.
@@ -22,19 +22,7 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body>
         {clerkEnabled ? (
-          <ClerkProvider
-            appearance={{
-              variables: {
-                colorPrimary: "#8b5cf6",
-                colorBackground: "#151519",
-                colorForeground: "#fafafa",
-                colorInput: "#202026",
-                colorInputForeground: "#fafafa",
-              },
-            }}
-          >
-            {children}
-          </ClerkProvider>
+          <WorkspaceClerkProvider>{children}</WorkspaceClerkProvider>
         ) : (
           children
         )}
