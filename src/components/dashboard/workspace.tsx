@@ -1,9 +1,13 @@
 "use client";
 
 import { ClerkProvider } from "@clerk/nextjs";
-import type { ReactNode } from "react";
+import { Dashboard } from "./dashboard";
 
-export function WorkspaceClerkProvider({ children }: { children: ReactNode }) {
+export default function Workspace({ clerkEnabled }: { clerkEnabled: boolean }) {
+  const dashboard = <Dashboard clerkEnabled={clerkEnabled} />;
+
+  if (!clerkEnabled) return dashboard;
+
   return (
     <ClerkProvider
       appearance={{
@@ -16,7 +20,7 @@ export function WorkspaceClerkProvider({ children }: { children: ReactNode }) {
         },
       }}
     >
-      {children}
+      {dashboard}
     </ClerkProvider>
   );
 }
