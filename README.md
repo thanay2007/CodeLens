@@ -25,7 +25,7 @@ Copy `.env.example` to `.env.local`. Never put service secrets in browser variab
 | `CLERK_SECRET_KEY`                  | Server authentication; required for production workspace access                         |
 | `GITHUB_TOKEN`                      | Optional server-side token to increase GitHub public API limits                         |
 | `GROQ_API_KEY`                      | Generates README, architecture, file explanations, deployment guides, and streamed chat |
-| `GROQ_MODEL`                        | Defaults to `llama-3.3-70b-versatile`; confirm availability in your Groq account        |
+| `GROQ_MODEL`                        | Defaults to `openai/gpt-oss-120b`. Confirm availability in your Groq account.           |
 | `PINECONE_API_KEY`                  | Pinecone vector storage and hosted embedding inference                                  |
 | `PINECONE_INDEX`                    | Existing dense vector index name                                                        |
 | `PINECONE_EMBEDDING_MODEL`          | Defaults to `multilingual-e5-large`; use a 1024-dimensional cosine index for this model |
@@ -48,7 +48,7 @@ Restart after changing configuration, then **reanalyze** a repository to generat
 5. When Pinecone is configured, chunks are embedded in batches and upserted into a dedicated namespace derived server-side from the user, repository, and indexing attempt. Missing services leave source inspection usable with a clear setup warning.
 6. Chat embeds the question with the snapshot's embedding model, retrieves up to six matching chunks, streams Groq output as newline-delimited events, and presents immutable GitHub source links. Complete user/assistant turns are saved; interrupted or truncated answers are not persisted. Client-supplied namespaces, source text, and chat roles are not accepted.
 
-The dashboard includes responsive navigation, workspace search (`Ctrl/Cmd + K`), progress, cancellation, saved repository history, generated/original README previews and exports, interactive Mermaid diagrams, a code tour, tech badges, health findings, deployment guide downloads, and a sliding chat drawer. The Pro button remains a mock product preview with no billing.
+The dashboard includes responsive navigation, workspace search (`Ctrl/Cmd + K`), progress, cancellation, saved repository history, generated/original README previews and exports, interactive Mermaid diagrams, a code tour, tech badges, health findings, deployment guide downloads, and a sliding chat drawer. All CodeLens features are free to use. Configured integrations are subject to their providers’ usage limits.
 
 ## Persistence, authentication, and limits
 
@@ -58,7 +58,7 @@ Jobs execute with Next.js `after()` and a 270-second SQL lease. A stopped job ma
 
 Durable quotas currently permit 10 analysis starts/hour, 30/day, two active analyses, 15 chat requests/minute, and 150/day per workspace. Chat generation is serialized per repository to prevent overlapping turns from overwriting history. Development without Clerk uses a single local workspace. No AST parsing is claimed: recursive splitting prefers language boundaries but can split long functions.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker, Vercel, AWS, database, Clerk, and Pinecone setup. A non-root multi-stage Dockerfile and `/api/health` endpoint are included. Hosting, external accounts/indexes, billing, and a continuously running job queue are not provisioned automatically.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker, Vercel, AWS, database, Clerk, and Pinecone setup. A non-root multi-stage Dockerfile and `/api/health` endpoint are included. Create your hosting project, provider accounts, and index during setup. A dedicated job worker is a separate deployment component for larger workloads.
 
 ## Folder structure
 

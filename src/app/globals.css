@@ -150,9 +150,6 @@ a:focus-visible {
   content: "";
   box-shadow: 0 0 12px #a78bfa60;
 }
-.pro-card {
-  background: radial-gradient(ellipse at 10% 0, #8b5cf615, transparent 85%);
-}
 .topbar {
   position: sticky;
   top: 0;

@@ -30,7 +30,6 @@ import {
   ShieldCheck,
   Sparkles,
   X,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -71,8 +70,7 @@ const ArchitectureMap = dynamic(() => import("./architecture-map"), {
 });
 type Section =
   "overview" | "architecture" | "documentation" | "tour" | "deploy";
-type View =
-  "settings" | "search" | "mobile" | "upgrade" | "help" | "files" | null;
+type View = "settings" | "search" | "mobile" | "help" | "files" | null;
 type Detail = RepositorySummary & { data: RepositoryData | null };
 const navigation: { id: Section; title: string; icon: LucideIcon }[] = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
@@ -445,23 +443,6 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
         </button>
       </div>
       <div className="flex-1" />
-      <div className="pro-card mx-4 my-4 rounded-xl border border-violet-400/15 p-4">
-        <p className="flex items-center gap-2 text-xs text-violet-300">
-          <Zap size={15} />A little more superpower.
-        </p>
-        <p className="mt-3 text-[11px] leading-5 text-zinc-500">
-          Bigger codebases. Deeper insights.
-          <br />A workspace that grows with you.
-        </p>
-        <Button
-          onClick={() => setView("upgrade")}
-          variant="outline"
-          className="mt-4 h-8 w-full border-violet-400/20 bg-violet-500/10 text-xs text-violet-200"
-        >
-          Explore Pro
-          <ArrowUpRight className="ml-auto" />
-        </Button>
-      </div>
       <div className="border-t border-white/6 px-3 py-3">
         <button className="nav-item" onClick={() => setView("settings")}>
           <Settings2 size={16} />
@@ -1318,7 +1299,7 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
           <ol className="list-decimal space-y-4 pl-5 text-sm leading-6 text-zinc-400">
             <li>
               Browse source files, detected frameworks, and heuristic health
-              signals without paid services.
+              signals as soon as source inspection finishes.
             </li>
             <li>
               Configure Groq to generate documentation, architecture, file
@@ -1333,29 +1314,6 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
               history and saved conversations.
             </li>
           </ol>
-        </Modal>
-        <Modal
-          open={view === "upgrade"}
-          onOpenChange={(open) => !open && setView(null)}
-          title="More room for your next big idea."
-          description="Pro is a product preview. Billing is not connected."
-        >
-          <div className="space-y-4 rounded-xl border border-violet-400/20 bg-violet-500/5 p-5">
-            {[
-              "Larger source snapshots",
-              "Shared team workspaces",
-              "Higher conversation limits",
-              "Deeper architecture insights",
-            ].map((text) => (
-              <p
-                className="flex items-center gap-2 text-sm text-zinc-400"
-                key={text}
-              >
-                <Check size={14} className="text-violet-400" />
-                {text}
-              </p>
-            ))}
-          </div>
         </Modal>
       </div>
     </MotionConfig>

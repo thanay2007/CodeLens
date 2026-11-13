@@ -30,4 +30,4 @@ export function getPinecone(signal?: AbortSignal) {
   });
 }
 
-export const groqModel = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+export const groqModel = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
