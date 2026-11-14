@@ -11,48 +11,57 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:3000](http://localhost:3000). The development server binds to loopback. Without credentials, the app can still ingest public source files, save history, detect frameworks, inspect code health signals, and show code tours. The fictional storefront remains available as an explicitly labeled demo.
+Open [localhost:3000](http://localhost:3000). The development server binds to loopback. Without credentials, the app can still ingest public source files, save history, explain source structure, and show code tours.
 
 The scripts use Next.js's supported Webpack bundler because the development Windows host's Turbopack CSS worker crashes. Remove `--webpack` if you prefer Turbopack in a compatible environment.
+
+Browser regression checks catch hydration failures that a successful HTTP response
+or production build cannot detect. Stop the development server first, then run
+`npx playwright install chromium` and `npm run test:browser`. The tests start a
+development server on port 3020 and exercise reloads, documentation, code tours,
+expandable architecture, source highlighting, and repository history. CI saves browser failure traces.
 
 ## Configure integrations
 
 Copy `.env.example` to `.env.local`. Never put service secrets in browser variables or commit them.
 
-| Variable                            | Purpose                                                                                 |
-| ----------------------------------- | --------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk public browser configuration; available at build time                             |
-| `CLERK_SECRET_KEY`                  | Server authentication; required for production workspace access                         |
-| `GITHUB_TOKEN`                      | Optional server-side token to increase GitHub public API limits                         |
-| `GROQ_API_KEY`                      | Generates README, architecture, file explanations, deployment guides, and streamed chat |
-| `GROQ_MODEL`                        | Defaults to `openai/gpt-oss-120b`. Confirm availability in your Groq account.           |
-| `PINECONE_API_KEY`                  | Pinecone vector storage and hosted embedding inference                                  |
-| `PINECONE_INDEX`                    | Existing dense vector index name                                                        |
-| `PINECONE_EMBEDDING_MODEL`          | Defaults to `multilingual-e5-large`; use a 1024-dimensional cosine index for this model |
-| `DATABASE_URL`                      | PostgreSQL persistence for hosted/serverless deployments                                |
-| `CODELENS_DATA_DIR`                 | Optional persistent SQLite directory; defaults to `.data` during development            |
+| Variable                            | Purpose                                                                                  |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk public browser configuration; available at build time                              |
+| `CLERK_SECRET_KEY`                  | Server authentication; required for production workspace access                          |
+| `GITHUB_TOKEN`                      | Optional server-side token to increase GitHub public API limits                          |
+| `GEMINI_API_KEY`                    | Primary provider for the repository guide, architecture, and assistant                   |
+| `GEMINI_MODEL`                      | Defaults to `gemini-3.8-flash`                                                           |
+| `GROQ_API_KEY`                      | Fallback for documentation, architecture, and streamed chat                              |
+| `GROQ_MODEL`                        | Defaults to `openai/gpt-oss-120b`. Confirm availability in your Groq account.            |
+| `PINECONE_API_KEY`                  | Pinecone vector storage and hosted embedding inference                                   |
+| `PINECONE_INDEX`                    | Existing dense vector index name                                                         |
+| `PINECONE_EMBEDDING_MODEL`          | Defaults to `multilingual-e5-large`; use a 1024-dimensional cosine index for this model  |
+| `SUPABASE_DATABASE_URL`             | Private per-user history using the restricted Supabase database role                     |
+| `CODELENS_HISTORY_KEY`              | Server-only 32-byte hex key for Supabase history encryption and pseudonymous account IDs |
+| `DATABASE_URL`                      | PostgreSQL persistence for hosted/serverless deployments                                 |
+| `CODELENS_DATA_DIR`                 | Optional persistent SQLite directory; defaults to `.data` during development             |
 
 **Groq does not supply the embedding model.** This implementation uses Pinecone's hosted inference for document and query embeddings, validates dimensions before upsert, and saves the embedding model with each snapshot. The current Pinecone SDK/adapter uses the legacy dense vector API. Create a compatible vector index rather than a document/records-only index. The app does not create paid resources automatically.
 
-Restart after changing configuration, then **reanalyze** a repository to generate assets or create its vector index. Settings distinguish configured services from missing integrations. An enabled configuration is not proof that its credentials are valid; failures appear as explicit analysis warnings.
+Restart after changing configuration, then **reanalyze** a repository to generate assets or create its vector index. Provider errors appear in the analysis status.
 
 ## Implemented flow
 
-1. A public GitHub URL starts a saved background analysis job. GitHub metadata, the default branch commit, and its immutable tree are fetched through the REST API.
-2. Up to **36 eligible source files / 160 KB total** are downloaded by blob SHA. Files above 32 KB, binaries, symlinks, common generated directories, lockfiles, environment files, credential files, and private-key files are excluded. Detected credential patterns are redacted before storage, embeddings, or AI processing. Redaction is best effort, not a guarantee that every secret is detected.
-3. Language-aware LangChain splitting produces up to 300 chunks with file and line metadata. Framework detection reads manifests; file ranking chooses up to five source/configuration files. The health score is a disclosed heuristic on inspected files, not a security audit or whole-repository guarantee.
-4. When Groq is configured, one validated structured response generates documentation, explanations, and deployment guides. A bounded architecture graph is serialized to safe Mermaid syntax; the browser parses and renders it in strict mode. Explanations cannot replace the stored source code. Unavailable/failed generation never falls back to unrelated demo assets.
+1. A public GitHub URL starts a background analysis pinned to the default branch commit. The complete Git tree is listed, including binary files, protected paths, symbolic links, and submodule references.
+2. CodeLens inspects UTF-8 source without file-count, per-file size, total source byte, or chunk-count caps. Code Tour renders the committed hierarchy and loads individual text previews. Credential-bearing paths remain listed with their contents withheld. Detected secret values are redacted before previews, analysis, and integrations.
+3. Source inspection builds a repository guide covering entry points, folders, dependencies, routes, models, and configuration when detected. The architecture branches expand from major components down to source files and operations. Gemini writes a plain-English guide and enriches the map from repository evidence. Groq runs if Gemini is unconfigured or the generation attempt fails.
+4. Pinecone optionally embeds code chunks in a separate namespace for each analysis. Chat uses the semantic index when available and searches source when indexing is unavailable. The guide and map remain usable if indexing times out.
 
-   Groq also proposes code-health review findings. Suggestions are kept only when their exact evidence matches a known source line, and are labeled as AI suggestions. They do not change the deterministic pattern-based inspection score.
-
-5. When Pinecone is configured, chunks are embedded in batches and upserted into a dedicated namespace derived server-side from the user, repository, and indexing attempt. Missing services leave source inspection usable with a clear setup warning.
-6. Chat embeds the question with the snapshot's embedding model, retrieves up to six matching chunks, streams Groq output as newline-delimited events, and presents immutable GitHub source links. Complete user/assistant turns are saved; interrupted or truncated answers are not persisted. Client-supplied namespaces, source text, and chat roles are not accepted.
-
-The dashboard includes responsive navigation, workspace search (`Ctrl/Cmd + K`), progress, cancellation, saved repository history, generated/original README previews and exports, interactive Mermaid diagrams, a code tour, tech badges, health findings, deployment guide downloads, and a sliding chat drawer. All CodeLens features are free to use. Configured integrations are subject to their providers’ usage limits.
+The workspace includes search, analysis progress and cancellation, documentation and Mermaid exports, the repository file tree, and per-entry history deletion.
 
 ## Persistence, authentication, and limits
 
-Local development uses SQLite in ignored `.data/` storage. Configure `DATABASE_URL` to use PostgreSQL instead. Tables and indexes are created on first access. Production refuses the unauthenticated development fallback and requires either PostgreSQL or an explicitly configured persistent SQLite directory. SQL reads/writes, job status, chat history, quotas, and vector namespaces are scoped to the authenticated Clerk user.
+Local development uses SQLite in ignored .data storage. For private hosted history, configure Supabase with the migration and server settings in [DEPLOYMENT.md](DEPLOYMENT.md#supabase-history). The legacy DATABASE_URL and SQLite modes store source snapshots and completed conversations locally to their configured databases.
+
+With Supabase, a signed-in Clerk user can read and delete their own repository history. CodeLens stores a keyed account identifier, job timestamps and status, and encrypted repository links, names, and analysis summaries. The server fetches source previews from the pinned GitHub commit as needed. Raw source blobs, chunks, and chat transcripts are excluded from Supabase. Optional Gemini, Groq, and Pinecone features send redacted source excerpts or chunks and, for chat, the current question to those providers. Pinecone is used for vector embeddings and source references.
+
+The app has no admin history view. Supabase client roles have no access to the workspace schema. Database operators with privileged access can see operational metadata and ciphertext. Decrypting repository history also requires the separate application key. Deletion removes the live history record and any associated Pinecone namespace. Provider backups can retain prior records according to their retention settings.
 
 Jobs execute with Next.js `after()` and a 270-second SQL lease. A stopped job may be reclaimed when its owner polls after the lease expires, for up to three attempts. Cancellation prevents further persisted worker writes. In-flight provider requests may finish before cancellation is observed. This is not a standalone durable queue; use a dedicated worker for guaranteed processing without client polling or for larger repositories.
 
@@ -84,15 +93,14 @@ src/
       access.ts                     # Clerk identity, request guards
       database.ts                   # SQLite/PostgreSQL adapter and schema
       store.ts                      # Tenant-scoped history, leases, quotas, chat
-      github.ts                     # Immutable, size-bounded GitHub ingestion
+      github.ts                     # Pinned GitHub ingestion and full tree traversal
       source-analysis.ts            # Filtering, redaction, detection, chunking
       ingestion.ts                  # Background analysis pipeline
-      generation.ts                 # Groq schema validation and graph serialization
+      generation.ts                 # Model response validation and graph serialization
       vectors.ts                    # Pinecone embedding, index, retrieval
       clients.ts                    # Server-only service clients
       errors.ts
     chat-stream.ts                  # Incremental NDJSON/UTF-8 decoder
-    demo.ts                         # Explicit fictional fixture
     github-url.ts
     types.ts
     utils.ts
@@ -133,7 +141,7 @@ npm run smoke
 
 The smoke script creates a saved `octocat/Spoon-Knife` snapshot and consumes GitHub API requests. It checks invalid URLs, cross-origin rejection, full ingestion, immutable commits, and saved history. It does not make paid AI requests.
 
-Tests use temporary SQLite databases and mocked provider responses to check tenant isolation, quotas, exclusive leases, cancellation, redaction, source line citations, schema validation, dimension checks, streaming, and incomplete-turn handling. CI repeats tests, type checking, formatting, and production compilation. Real Clerk login, Groq/Pinecone services, and hosted PostgreSQL still require your credentials for live verification. Visual browser verification remains pending because the earlier preview permission was declined.
+Tests use temporary SQLite databases and mocked provider responses to check tenant isolation, quotas, exclusive leases, cancellation, redaction, source line citations, schema validation, dimension checks, streaming, and incomplete-turn handling. CI repeats tests, type checking, formatting, and production compilation. Real Clerk login, Gemini/Groq/Pinecone services, and hosted PostgreSQL still require your credentials for live verification. The browser suite covers the dashboard and repository views with mocked repository API responses.
 
 ## Documentation and component credits
 
@@ -144,4 +152,4 @@ Tests use temporary SQLite databases and mocked provider responses to check tena
 - [LangChain code splitting](https://docs.langchain.com/oss/javascript/integrations/splitters/code_splitter)
 - [Groq text generation](https://console.groq.com/docs/text-chat)
 - [Pinecone embeddings](https://docs.pinecone.io/guides/inference/generate-embeddings)
-- [GitHub blob API](https://docs.github.com/en/rest/git/blobs)
+- [GitHub tree API](https://docs.github.com/en/rest/git/trees)

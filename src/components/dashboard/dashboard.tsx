@@ -4,19 +4,18 @@ import dynamic from "next/dynamic";
 import { SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import { AnimatePresence, motion, MotionConfig } from "framer-motion";
 import {
-  Activity,
   ArrowDownToLine,
   ArrowRight,
-  ArrowUpRight,
   Boxes,
   Braces,
   Check,
+  CircleAlert,
   ChevronRight,
-  CircleHelp,
   Code2,
   FileCode2,
   FileText,
   GitBranch,
+  Home,
   Layers3,
   LayoutDashboard,
   LoaderCircle,
@@ -24,11 +23,10 @@ import {
   Network,
   Plus,
   RefreshCw,
-  Rocket,
   Search,
-  Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -44,18 +42,15 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { Spotlight } from "@/components/ui/spotlight";
 import { Github } from "@/components/ui/github-icon";
-import {
-  architecture as demoArchitecture,
-  coreFiles as demoFiles,
-  demoReadme,
-} from "@/lib/demo";
 import { cn, downloadText } from "@/lib/utils";
 import type {
   RepositoryData,
+  RepositoryEntry,
   RepositorySummary,
   ServiceConfiguration,
 } from "@/lib/types";
 import { ChatDrawer } from "./chat-drawer";
+import { ArchitectureExplorer } from "./architecture-explorer";
 import { CodeTour } from "./code-tour";
 import { Markdown } from "./markdown";
 
@@ -68,51 +63,33 @@ const ArchitectureMap = dynamic(() => import("./architecture-map"), {
     </div>
   ),
 });
-type Section =
-  "overview" | "architecture" | "documentation" | "tour" | "deploy";
-type View = "settings" | "search" | "mobile" | "help" | "files" | null;
+type Section = "overview" | "architecture" | "documentation" | "tour";
+type View = "search" | "mobile" | "delete" | null;
 type Detail = RepositorySummary & { data: RepositoryData | null };
 const navigation: { id: Section; title: string; icon: LucideIcon }[] = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "architecture", title: "Architecture", icon: Network },
   { id: "documentation", title: "Documentation", icon: FileText },
   { id: "tour", title: "Code tour", icon: Braces },
-  { id: "deploy", title: "Deploy guide", icon: Rocket },
 ];
 const defaults: ServiceConfiguration = {
   clerk: false,
+  gemini: false,
   groq: false,
   pinecone: false,
   local: true,
   database: "sqlite",
 };
 
-function Account({
-  enabled,
+function ClerkAccount({
   onIdentity,
-  onSettings,
 }: {
-  enabled: boolean;
-  onIdentity: () => void;
-  onSettings: () => void;
+  onIdentity: (signedIn: boolean) => void;
 }) {
-  return enabled ? (
-    <ClerkAccount onIdentity={onIdentity} />
-  ) : (
-    <button
-      onClick={onSettings}
-      className="flex size-8 items-center justify-center rounded-full border border-violet-300/30 bg-violet-500/15 text-[11px] text-violet-100"
-      aria-label="Workspace settings"
-    >
-      CL
-    </button>
-  );
-}
-function ClerkAccount({ onIdentity }: { onIdentity: () => void }) {
   const { isLoaded, isSignedIn, user } = useUser();
   useEffect(() => {
-    if (isLoaded) onIdentity();
-  }, [isLoaded, user?.id, onIdentity]);
+    if (isLoaded) onIdentity(Boolean(isSignedIn));
+  }, [isLoaded, isSignedIn, user?.id, onIdentity]);
   return !isLoaded ? (
     <span className="size-8 animate-pulse rounded-full bg-zinc-800" />
   ) : isSignedIn ? (
@@ -166,26 +143,12 @@ function Panel({
     </section>
   );
 }
-function Empty({
-  title,
-  text,
-  onSetup,
-}: {
-  title: string;
-  text: string;
-  onSetup?: () => void;
-}) {
+function Empty({ title, text }: { title: string; text: string }) {
   return (
     <div className="flex min-h-60 flex-col items-center justify-center p-8 text-center">
       <Sparkles className="mb-4 size-7 text-violet-400/60" />
       <h3 className="text-sm text-zinc-200">{title}</h3>
       <p className="mt-2 max-w-md text-xs leading-6 text-zinc-500">{text}</p>
-      {onSetup && (
-        <Button variant="outline" size="sm" className="mt-4" onClick={onSetup}>
-          View integrations
-          <ArrowRight />
-        </Button>
-      )}
     </div>
   );
 }
@@ -209,37 +172,47 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
     [error, setError] = useState("");
   const [chat, setChat] = useState(false),
     [search, setSearch] = useState(""),
-    [tourFile, setTourFile] = useState(0);
+    [tourPath, setTourPath] = useState<string>();
+  const [deleteTarget, setDeleteTarget] = useState<RepositorySummary | null>(
+    null,
+  );
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [revision, setRevision] = useState(0);
-  const chosen = useRef(false),
-    repoInput = useRef<HTMLInputElement>(null);
-  const identityChanged = useCallback(() => {
-    chosen.current = false;
+  const [canLoadHistory, setCanLoadHistory] = useState(!clerkEnabled);
+  const identityVersion = useRef(0);
+  const identityChanged = useCallback((signedIn: boolean) => {
+    identityVersion.current++;
     setActive(null);
     setSelected(null);
+    setHistory([]);
+    setChat(false);
+    setView(null);
+    setDeleteTarget(null);
+    setError("");
+    setCanLoadHistory(signedIn);
     setRevision((value) => value + 1);
   }, []);
 
   const refreshHistory = useCallback(async (signal?: AbortSignal) => {
+    const version = identityVersion.current;
     const result = await jsonFetch("/api/repositories", { signal });
-    setHistory(result.repositories);
-    if (!chosen.current && result.repositories[0]) {
-      chosen.current = true;
-      setSelected(result.repositories[0].id);
-    }
+    if (!signal?.aborted && version === identityVersion.current)
+      setHistory(result.repositories);
   }, []);
   useEffect(() => {
     const controller = new AbortController();
     jsonFetch("/api/workspace", { signal: controller.signal })
       .then(setConfig)
       .catch(() => undefined);
-    refreshHistory(controller.signal)
-      .then(() => setError(""))
-      .catch((err) => {
-        if (!controller.signal.aborted) setError(err.message);
-      });
+    if (canLoadHistory)
+      refreshHistory(controller.signal)
+        .then(() => setError(""))
+        .catch((err) => {
+          if (!controller.signal.aborted) setError(err.message);
+        });
     return () => controller.abort();
-  }, [revision, refreshHistory]);
+  }, [revision, refreshHistory, canLoadHistory]);
   useEffect(() => {
     if (!selected) return;
     const controller = new AbortController();
@@ -276,39 +249,62 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
   }, []);
 
   function select(id: string | null) {
-    chosen.current = true;
-    setActive(null);
+    if (id !== selected) setActive(null);
     setSelected(id);
     setView(null);
     setError("");
     setSection("overview");
-    setTourFile(0);
+    setTourPath(undefined);
   }
   function navigate(id: Section) {
     setSection(id);
     setView(null);
   }
-  function focusRepo() {
-    setView(null);
-    repoInput.current?.focus();
+  function home() {
+    select(null);
+    setChat(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   async function analyze(url: string) {
     if (loading) return;
     setLoading(true);
     setError("");
+    const version = identityVersion.current;
     try {
       const repo = await jsonFetch("/api/repositories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      select(repo.id);
-      await refreshHistory();
+      if (version === identityVersion.current) {
+        select(repo.id);
+        await refreshHistory();
+      }
     } catch (err) {
-      setError((err as Error).message);
+      if (version === identityVersion.current) setError((err as Error).message);
     } finally {
       setLoading(false);
+    }
+  }
+  async function deleteRepository() {
+    if (!deleteTarget || deleting) return;
+    const id = deleteTarget.id;
+    const version = identityVersion.current;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await jsonFetch(`/api/repositories/${id}`, { method: "DELETE" });
+      if (version !== identityVersion.current) return;
+      if (selected === id) home();
+      setHistory((items) => items.filter((item) => item.id !== id));
+      setDeleteTarget(null);
+      setView(null);
+      setRevision((value) => value + 1);
+    } catch (err) {
+      if (version === identityVersion.current)
+        setDeleteError((err as Error).message);
+    } finally {
+      setDeleting(false);
     }
   }
   async function cancel() {
@@ -322,46 +318,54 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
       setError((err as Error).message);
     }
   }
-  const demo = !selected,
-    data = active?.data,
-    assets = data?.assets;
-  const name = demo
-    ? "acme/storefront"
-    : active?.name ||
-      history.find((item) => item.id === selected)?.name ||
-      "Loading repository";
-  const coreFiles = demo
-    ? demoFiles
-    : assets?.coreFiles || data?.coreFiles || [];
-  const diagram = demo ? demoArchitecture : assets?.architecture;
-  const readme = demo
-    ? demoReadme
-    : assets?.readme ||
-      data?.files.find((file) => /(^|\/)readme\.md$/i.test(file.path))?.content;
+  const data = active?.data;
+  const assets = data?.assets;
+  const name =
+    active?.name ||
+    history.find((item) => item.id === selected)?.name ||
+    "Loading repository";
+  const coreFiles = assets?.coreFiles || data?.coreFiles || [];
+  const diagram = assets?.architecture;
+  const readme = assets?.readme;
+  const treeEntries =
+    data?.repository.entries ??
+    [
+      ...new Set([
+        ...(data?.repository.paths ?? []),
+        ...(data?.files.map((file) => file.path) ?? []),
+      ]),
+    ].map((path): RepositoryEntry => ({
+      path,
+      kind: "file",
+      preview: data?.files.some((file) => file.path === path)
+        ? "text"
+        : undefined,
+    }));
+  const inspectedLines = Object.values(data?.languages || {}).reduce(
+    (total, lines) => total + lines,
+    0,
+  );
   const busy = Boolean(
     active && ["queued", "processing"].includes(active.status),
   );
-  const techStack = demo
-    ? [
-        "Next.js",
-        "TypeScript",
-        "Tailwind CSS",
-        "Prisma",
-        "PostgreSQL",
-        "Stripe",
-      ]
-    : data?.techStack || [];
-  const score = demo ? 85 : data?.healthScore;
+  const techStack = data?.techStack ?? [];
+  const chatReady = Boolean(
+    data?.indexedFiles &&
+    (config.gemini || config.groq) &&
+    active?.status !== "cancelled",
+  );
+
+  function openSource(path: string) {
+    setTourPath(path);
+    navigate("tour");
+  }
 
   const sidebar = (
     <>
       <div className="px-5 pb-7 pt-7">
         <Logo />
       </div>
-      <button
-        onClick={() => setView("settings")}
-        className="mx-4 mb-7 flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.025] p-3 text-left"
-      >
+      <div className="mx-4 mb-7 flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.025] p-3">
         <span className="flex size-7 items-center justify-center rounded-md bg-violet-500/10 text-xs text-violet-300">
           W
         </span>
@@ -373,86 +377,59 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
               : "Your repositories"}
           </span>
         </span>
-      </button>
+      </div>
       <div className="sidebar-label">WORKSPACE</div>
       <nav className="space-y-1 px-3" aria-label="Main navigation">
-        {navigation.map(({ id, title, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => navigate(id)}
-            aria-current={section === id ? "page" : undefined}
-            className={cn("nav-item", section === id && "nav-item-active")}
-          >
-            <Icon size={17} strokeWidth={1.7} />
-            {title}
-            {section === id && (
-              <span className="ml-auto size-1.5 rounded-full bg-violet-400" />
-            )}
-          </button>
-        ))}
-      </nav>
-      <div className="sidebar-label mt-8 flex items-center justify-between">
-        REPOSITORIES
-        <button onClick={focusRepo} aria-label="Add repository">
-          <Plus size={14} />
+        <button
+          onClick={home}
+          aria-current={!selected ? "page" : undefined}
+          className={cn("nav-item", !selected && "nav-item-active")}
+        >
+          <Home size={17} />
+          Home
         </button>
-      </div>
+      </nav>
+      <div className="sidebar-label mt-8">REPOSITORIES</div>
       <div className="space-y-1 px-3">
         {history.map((repo) => (
-          <button
+          <div
             key={repo.id}
-            onClick={() => select(repo.id)}
             className={cn(
-              "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-zinc-500 transition hover:bg-white/5",
+              "flex items-center rounded-lg text-zinc-500 transition hover:bg-white/5",
               selected === repo.id && "bg-violet-500/10 text-violet-200",
             )}
           >
-            <Github size={14} className="shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px]">{repo.name}</span>
-              <span className="mt-1 block text-[9px] text-zinc-600">
-                {repo.status} · {new Date(repo.createdAt).toLocaleDateString()}
+            <button
+              onClick={() => select(repo.id)}
+              aria-current={selected === repo.id ? "true" : undefined}
+              className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-left"
+            >
+              <Github size={14} className="shrink-0" />
+              <span className="min-w-0">
+                <span className="block truncate text-[11px]">{repo.name}</span>
+                <span className="mt-1 block text-[9px] text-zinc-500">
+                  {repo.status} ·{" "}
+                  {new Date(repo.createdAt).toLocaleDateString()}
+                </span>
               </span>
-            </span>
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                repo.status === "ready"
-                  ? "bg-emerald-400"
-                  : repo.status === "failed"
-                    ? "bg-rose-400"
-                    : "bg-violet-400",
-              )}
-            />
-          </button>
+            </button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="mr-1 !size-7 shrink-0 hover:text-rose-300"
+              aria-label={`Delete ${repo.name} from history`}
+              onClick={() => {
+                setDeleteTarget(repo);
+                setDeleteError("");
+                setView("delete");
+              }}
+            >
+              <Trash2 className="!size-3.5" />
+            </Button>
+          </div>
         ))}
-        <button
-          onClick={() => select(null)}
-          className={cn(
-            "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-xs text-zinc-500",
-            demo && "bg-white/[0.035] text-zinc-300",
-          )}
-        >
-          <Sparkles size={14} />
-          Storefront demo
-          <span className="ml-auto text-[9px] text-zinc-600">SAMPLE</span>
-        </button>
-        <button onClick={focusRepo} className="nav-item !text-[11px]">
-          <Plus size={14} />
-          Analyze a repository
-        </button>
       </div>
       <div className="flex-1" />
-      <div className="border-t border-white/6 px-3 py-3">
-        <button className="nav-item" onClick={() => setView("settings")}>
-          <Settings2 size={16} />
-          Settings
-        </button>
-        <button className="nav-item" onClick={() => setView("help")}>
-          <CircleHelp size={16} />
-          Getting started
-        </button>
-      </div>
       <div className="flex items-center gap-2 border-t border-white/6 px-6 py-4 text-[10px] text-zinc-600">
         <span className="size-1.5 rounded-full bg-emerald-400" />
         Your code, in focus<span className="ml-auto font-mono">v0.2.0</span>
@@ -479,17 +456,13 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
               <Menu />
             </Button>
             <div className="flex min-w-0 items-center gap-2.5 text-xs">
-              <span className="hidden text-zinc-600 sm:inline">Workspace</span>
-              <ChevronRight
-                size={13}
-                className="hidden text-zinc-700 sm:block"
-              />
-              <Github size={15} className="shrink-0 text-zinc-500" />
-              <span className="truncate text-zinc-300">{name}</span>
-              {demo && (
-                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[9px] text-zinc-500">
-                  Demo
-                </span>
+              <span className="text-zinc-400">Workspace</span>
+              {selected && (
+                <>
+                  <ChevronRight size={13} className="text-zinc-700" />
+                  <Github size={15} className="shrink-0 text-zinc-500" />
+                  <span className="truncate text-zinc-300">{name}</span>
+                </>
               )}
             </div>
             <div className="ml-auto flex items-center gap-3">
@@ -504,11 +477,7 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                   ⌘ K
                 </kbd>
               </button>
-              <Account
-                enabled={clerkEnabled}
-                onIdentity={identityChanged}
-                onSettings={() => setView("settings")}
-              />
+              {clerkEnabled && <ClerkAccount onIdentity={identityChanged} />}
             </div>
           </header>
           <main id="main-content" className="dashboard-content">
@@ -521,16 +490,12 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
               <Spotlight className="-right-[20%] -top-[150%]" />
               <div className="hero-grid" aria-hidden="true" />
               <div className="relative z-10 max-w-[700px]">
-                <div className="mb-4 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[2px] text-violet-300">
-                  <Sparkles size={13} />
-                  Clarity starts here
-                </div>
                 <h1 className="text-[clamp(25px,3.1vw,40px)] font-semibold leading-[1.2] tracking-[-1.5px]">
-                  Big codebase.
-                  <span className="hero-gradient"> Clear picture.</span>
+                  Analyze a repository
                 </h1>
                 <p className="mt-3 text-[13px] leading-6 text-zinc-400">
-                  Turn unfamiliar code into your next head start.
+                  Paste a public GitHub URL to explore its architecture,
+                  documentation, and source files.
                 </p>
                 <form
                   onSubmit={(event: FormEvent) => {
@@ -541,7 +506,6 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 >
                   <Github size={19} className="ml-4 shrink-0 text-zinc-500" />
                   <input
-                    ref={repoInput}
                     type="url"
                     required
                     maxLength={300}
@@ -569,8 +533,10 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 </form>
                 <p className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-zinc-600">
                   <ShieldCheck size={11} />
-                  Public repositories · Commit-pinned source snapshots · Likely
-                  secrets redacted
+                  Public repositories · Pinned commits ·{" "}
+                  {config.database === "supabase"
+                    ? "Encrypted repository history"
+                    : "Likely secrets redacted"}
                 </p>
               </div>
               <div
@@ -607,531 +573,424 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
                 </button>
               </div>
             )}
-            <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <div className="mb-1.5 flex items-center gap-2 text-[10px] text-zinc-600">
-                  <span className="size-1.5 rounded-full bg-emerald-400/80" />
-                  {demo ? "EXAMPLE WORKSPACE" : "YOUR SOURCE SNAPSHOT"}
-                  <span className="px-1 text-zinc-700">/</span>
-                  <span className="font-mono">
-                    {data?.commitSha.slice(0, 7) ||
-                      (demo ? "acme/storefront" : active?.status || "Loading")}
-                  </span>
-                </div>
-                <h2 className="text-xl font-semibold tracking-[-0.6px]">
-                  {section === "overview"
-                    ? "Repository overview"
-                    : navigation.find((item) => item.id === section)?.title}
-                </h2>
-              </div>
-              <div className="flex items-center gap-2">
-                {!demo && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={loading || busy}
-                    onClick={() => analyze(active?.url || "")}
-                  >
-                    <RefreshCw className="!size-3.5" />
-                    Reanalyze
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!readme}
-                  onClick={() => readme && downloadText("README.md", readme)}
-                >
-                  <ArrowDownToLine className="!size-3.5" />
-                  Export README
-                </Button>
-              </div>
-            </div>
-            {!demo && active && (
-              <div className="panel mb-5 px-5 py-4">
-                <div className="flex items-center gap-3">
-                  {busy ? (
-                    <LoaderCircle className="size-4 animate-spin text-violet-400" />
-                  ) : (
-                    <Check className="size-4 text-emerald-400" />
-                  )}
-                  <span role="status" className="flex-1 text-xs text-zinc-300">
-                    {active.stage}
-                  </span>
-                  <span className="font-mono text-[10px] text-zinc-500">
-                    {active.progress}%
-                  </span>
-                  {busy && (
-                    <Button variant="ghost" size="sm" onClick={cancel}>
-                      Cancel
+            {selected && (
+              <>
+                <div className="mb-5 mt-8 flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="mb-1.5 flex items-center gap-2 text-[10px] text-zinc-600">
+                      <span className="size-1.5 rounded-full bg-emerald-400/80" />
+                      YOUR SOURCE SNAPSHOT
+                      <span className="px-1 text-zinc-700">/</span>
+                      <span className="font-mono">
+                        {data?.commitSha.slice(0, 7) ||
+                          active?.status ||
+                          "Loading"}
+                      </span>
+                    </div>
+                    <h2 className="text-xl font-semibold tracking-[-0.6px]">
+                      {section === "overview"
+                        ? "Repository overview"
+                        : navigation.find((item) => item.id === section)?.title}
+                    </h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!active || loading || busy}
+                      onClick={() => analyze(active?.url || "")}
+                    >
+                      <RefreshCw className="!size-3.5" />
+                      Reanalyze
                     </Button>
-                  )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!readme}
+                      onClick={() =>
+                        readme && downloadText("DOCUMENTATION.md", readme)
+                      }
+                    >
+                      <ArrowDownToLine className="!size-3.5" />
+                      Export documentation
+                    </Button>
+                  </div>
                 </div>
-                <div
-                  role="progressbar"
-                  aria-label="Repository analysis progress"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={active.progress}
-                  className="mt-3 h-1 overflow-hidden rounded bg-white/5"
-                >
-                  <motion.div
-                    animate={{ width: `${active.progress}%` }}
-                    className="h-full rounded bg-gradient-to-r from-violet-500 to-cyan-400"
-                  />
-                </div>
-                {active.error && (
-                  <p role="alert" className="mt-3 text-xs text-rose-300">
-                    {active.error}
-                  </p>
+                {active && (
+                  <div className="panel mb-5 px-5 py-4">
+                    <div className="flex items-center gap-3">
+                      {busy ? (
+                        <LoaderCircle className="size-4 animate-spin text-violet-400" />
+                      ) : active.status === "ready" ? (
+                        <Check className="size-4 text-emerald-400" />
+                      ) : (
+                        <CircleAlert className="size-4 text-amber-300" />
+                      )}
+                      <span
+                        role="status"
+                        className="flex-1 text-xs text-zinc-300"
+                      >
+                        {active.stage}
+                      </span>
+                      <span className="font-mono text-[10px] text-zinc-500">
+                        {active.progress}%
+                      </span>
+                      {busy && (
+                        <Button variant="ghost" size="sm" onClick={cancel}>
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                    <div
+                      role="progressbar"
+                      aria-label="Repository analysis progress"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={active.progress}
+                      className="mt-3 h-1 overflow-hidden rounded bg-white/5"
+                    >
+                      <motion.div
+                        animate={{ width: `${active.progress}%` }}
+                        className="h-full rounded bg-gradient-to-r from-violet-500 to-cyan-400"
+                      />
+                    </div>
+                    {active.error && (
+                      <p role="alert" className="mt-3 text-xs text-rose-300">
+                        {active.error}
+                      </p>
+                    )}
+                    {data?.warnings.map((warning) => (
+                      <p
+                        key={warning}
+                        className="mt-2 text-[11px] leading-5 text-zinc-500"
+                      >
+                        {warning}
+                      </p>
+                    ))}
+                  </div>
                 )}
-                {data?.warnings.map((warning) => (
-                  <p
-                    key={warning}
-                    className="mt-2 text-[11px] leading-5 text-zinc-500"
+                <nav aria-label="Repository views" className="repo-tabs">
+                  {navigation.map(({ id, title, icon: Icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => navigate(id)}
+                      aria-current={section === id ? "page" : undefined}
+                      className={cn(
+                        "repo-tab",
+                        section === id && "repo-tab-active",
+                      )}
+                    >
+                      <Icon size={14} />
+                      {title}
+                      {id === "tour" && (
+                        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-zinc-500">
+                          {treeEntries.length}
+                        </span>
+                      )}
+                      {section === id && (
+                        <motion.span
+                          layoutId="active-tab"
+                          className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-violet-400"
+                        />
+                      )}
+                    </button>
+                  ))}
+                </nav>
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={`${section}:${selected}`}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.18 }}
+                    className="mt-6"
                   >
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            )}
-            <nav aria-label="Repository views" className="repo-tabs">
-              {navigation.map(({ id, title, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => navigate(id)}
-                  aria-current={section === id ? "page" : undefined}
-                  className={cn(
-                    "repo-tab",
-                    section === id && "repo-tab-active",
-                  )}
-                >
-                  <Icon size={14} />
-                  {title}
-                  {id === "tour" && (
-                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-zinc-500">
-                      {coreFiles.length}
-                    </span>
-                  )}
-                  {section === id && (
-                    <motion.span
-                      layoutId="active-tab"
-                      className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-violet-400"
-                    />
-                  )}
-                </button>
-              ))}
-            </nav>
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={`${section}:${selected}`}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.18 }}
-                className="mt-6"
-              >
-                {!demo && !data ? (
-                  <Empty
-                    title={
-                      busy
-                        ? "Bringing your codebase into focus…"
-                        : active?.status === "failed"
-                          ? "This analysis needs another try."
-                          : active?.status === "cancelled"
-                            ? "Analysis cancelled."
-                            : "Loading your repository…"
-                    }
-                    text={
-                      active?.error ||
-                      "Source files, code health signals, and framework detection will appear as the analysis progresses."
-                    }
-                  />
-                ) : (
-                  <>
-                    {section === "overview" && (
+                    {!data ? (
+                      <Empty
+                        title={
+                          busy
+                            ? "Bringing your codebase into focus…"
+                            : active?.status === "failed"
+                              ? "This analysis needs another try."
+                              : active?.status === "cancelled"
+                                ? "Analysis cancelled."
+                                : "Loading your repository…"
+                        }
+                        text={
+                          active?.error ||
+                          "The repository views will appear as source analysis progresses."
+                        }
+                      />
+                    ) : (
                       <>
-                        <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-                          {[
-                            {
-                              icon: FileCode2,
-                              label: "Files in focus",
-                              value: demo
-                                ? "128"
-                                : String(data?.files.length || 0),
-                              note: demo
-                                ? "Across the sample repository"
-                                : `of ${data?.repository.fileCount}${data?.repository.truncated ? "+" : ""} repository files`,
-                              color: "violet",
-                            },
-                            {
-                              icon: Code2,
-                              label: "Inspected lines",
-                              value: demo
-                                ? "12.4k"
-                                : (
-                                    data?.files.reduce(
-                                      (sum, file) => sum + file.lines,
-                                      0,
-                                    ) || 0
-                                  ).toLocaleString(),
-                              note: "Within the source snapshot",
-                              color: "cyan",
-                            },
-                            {
-                              icon: Layers3,
-                              label: "Languages",
-                              value: demo
-                                ? "04"
-                                : String(
-                                    Object.keys(data?.languages || {}).length,
+                        {section === "overview" && (
+                          <>
+                            <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
+                              {[
+                                {
+                                  icon: FileCode2,
+                                  label: "Text files inspected",
+                                  value: data.indexedFiles.toLocaleString(),
+                                  note:
+                                    "of " +
+                                    data.repository.fileCount +
+                                    " committed entries",
+                                  color: "violet",
+                                },
+                                {
+                                  icon: Code2,
+                                  label: "Inspected lines",
+                                  value: inspectedLines.toLocaleString(),
+                                  note: "Within the source snapshot",
+                                  color: "cyan",
+                                },
+                                {
+                                  icon: Layers3,
+                                  label: "Languages",
+                                  value: String(
+                                    Object.keys(data.languages).length,
                                   ),
-                              note: demo
-                                ? "TypeScript leads the way"
-                                : Object.entries(data?.languages || {}).sort(
-                                    (a, b) => b[1] - a[1],
-                                  )[0]?.[0] || "Source detected",
-                              color: "pink",
-                            },
-                            {
-                              icon: Activity,
-                              label: "Inspection score",
-                              value: String(score ?? "—"),
-                              note: demo
-                                ? "Sample assessment"
-                                : "Heuristic signals · Limited coverage",
-                              color: "green",
-                            },
-                          ].map(({ icon: Icon, label, value, note, color }) => (
-                            <div className="stat-card" key={label}>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] text-zinc-500">
-                                  {label}
-                                </span>
-                                <span className={`stat-icon stat-${color}`}>
-                                  <Icon size={15} />
-                                </span>
-                              </div>
-                              <div className="mt-3.5 text-[29px] font-semibold leading-none tracking-[-1px]">
-                                {value}
-                              </div>
-                              <p className="mt-2.5 text-[10px] text-zinc-600">
-                                {note}
-                              </p>
+                                  note:
+                                    Object.entries(data.languages).sort(
+                                      (a, b) => b[1] - a[1],
+                                    )[0]?.[0] || "No text detected",
+                                  color: "pink",
+                                },
+                              ].map(
+                                ({ icon: Icon, label, value, note, color }) => (
+                                  <div className="stat-card" key={label}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[11px] text-zinc-500">
+                                        {label}
+                                      </span>
+                                      <span
+                                        className={`stat-icon stat-${color}`}
+                                      >
+                                        <Icon size={15} />
+                                      </span>
+                                    </div>
+                                    <div className="mt-3.5 text-[29px] font-semibold leading-none tracking-[-1px]">
+                                      {value}
+                                    </div>
+                                    <p className="mt-2.5 text-[10px] text-zinc-600">
+                                      {note}
+                                    </p>
+                                  </div>
+                                ),
+                              )}
                             </div>
-                          ))}
-                        </div>
-                        <div className="overview-grid">
+                            <div className="overview-grid">
+                              <Panel
+                                title="Your documentation"
+                                icon={FileText}
+                                action={
+                                  <span className="text-[9px] text-violet-300">
+                                    {assets?.generatedBy ?? "Source analysis"}
+                                  </span>
+                                }
+                              >
+                                <button
+                                  onClick={() => navigate("documentation")}
+                                  className="group flex w-full items-start gap-4 p-5 text-left"
+                                >
+                                  <span className="flex h-[76px] w-14 shrink-0 items-center justify-center rounded-lg border border-violet-300/10 bg-violet-400/5 text-violet-300/70">
+                                    <FileText size={26} strokeWidth={1.2} />
+                                  </span>
+                                  <span>
+                                    <span className="font-mono text-xs text-zinc-200">
+                                      Repository documentation
+                                    </span>
+                                    <span className="mt-2 block text-[11px] leading-5 text-zinc-500">
+                                      {readme
+                                        ? "Purpose, architecture, APIs, models, and local tasks."
+                                        : "Reanalyze to generate repository documentation."}
+                                    </span>
+                                    <span className="mt-3 block text-[10px] text-violet-400">
+                                      Open documentation →
+                                    </span>
+                                  </span>
+                                </button>
+                              </Panel>
+                              <Panel title="Tech stack" icon={Boxes}>
+                                <div className="flex flex-wrap gap-2 px-5 pb-4 pt-5">
+                                  {techStack.map((tech, index) => (
+                                    <span key={tech} className="tech-pill">
+                                      <span
+                                        className={
+                                          index % 2
+                                            ? "text-cyan-300"
+                                            : "text-violet-300"
+                                        }
+                                      >
+                                        ✳
+                                      </span>
+                                      {tech}
+                                    </span>
+                                  ))}
+                                  {!techStack.length && (
+                                    <span className="text-xs text-zinc-500">
+                                      No recognized framework manifests in the
+                                      inspected files.
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="px-5 pb-5 text-[10px] text-zinc-600">
+                                  Detected from inspected dependency manifests
+                                </p>
+                              </Panel>
+                            </div>
+                            <Panel
+                              title="Good places to start"
+                              icon={Braces}
+                              className="mt-5"
+                              action={
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => navigate("tour")}
+                                >
+                                  Explore files
+                                  <ArrowRight />
+                                </Button>
+                              }
+                            >
+                              <div className="grid divide-y divide-white/6 md:grid-cols-3 md:divide-x md:divide-y-0">
+                                {coreFiles.slice(0, 3).map((file, index) => (
+                                  <button
+                                    key={file.path}
+                                    onClick={() => {
+                                      setTourPath(file.path);
+                                      navigate("tour");
+                                    }}
+                                    className="flex min-w-0 items-center gap-3 p-5 text-left hover:bg-white/[0.025]"
+                                  >
+                                    <span className="font-mono text-[11px] text-zinc-700">
+                                      0{index + 1}
+                                    </span>
+                                    <FileCode2
+                                      size={18}
+                                      className="shrink-0 text-violet-400/70"
+                                    />
+                                    <span className="min-w-0">
+                                      <span className="block truncate font-mono text-[11px] text-zinc-300">
+                                        {file.path.split("/").pop()}
+                                      </span>
+                                      <span className="mt-1 block text-[10px] text-zinc-600">
+                                        {file.label}
+                                      </span>
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </Panel>
+                            <button
+                              onClick={() => setChat(true)}
+                              className="assistant-banner mt-5 flex w-full items-center gap-4 rounded-xl border border-violet-400/15 px-5 py-4 text-left"
+                            >
+                              <span className="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-300">
+                                <Sparkles size={18} />
+                              </span>
+                              <span className="flex-1">
+                                <span className="text-xs text-zinc-200">
+                                  Every codebase has a story. Ask yours.
+                                </span>
+                                <span className="mt-1 block text-[11px] text-zinc-500">
+                                  {chatReady
+                                    ? "Ask a question and follow citations back to the source."
+                                    : "Configure Gemini or Groq to enable the assistant."}
+                                </span>
+                              </span>
+                              <ArrowRight
+                                size={15}
+                                className="text-violet-300"
+                              />
+                            </button>
+                          </>
+                        )}
+                        {section === "architecture" && (
                           <Panel
-                            title="Architecture at a glance"
+                            title="System architecture"
                             icon={Network}
                             action={
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => navigate("architecture")}
-                                className="!h-6 !px-1 !text-[10px]"
-                              >
-                                Explore map
-                                <ArrowUpRight className="!size-3" />
-                              </Button>
+                              diagram && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    downloadText("architecture.mmd", diagram)
+                                  }
+                                >
+                                  <ArrowDownToLine />
+                                  Export Mermaid
+                                </Button>
+                              )
                             }
                           >
-                            {diagram ? (
+                            {assets?.architectureTree?.length ? (
+                              <ArchitectureExplorer
+                                nodes={assets.architectureTree}
+                                flows={assets.flows}
+                                repository={name}
+                                openFile={openSource}
+                              />
+                            ) : diagram ? (
                               <ArchitectureMap
+                                expanded
                                 source={diagram}
-                                description={`System architecture for ${name}`}
+                                description={`Architecture for ${name}`}
                               />
                             ) : (
                               <Empty
-                                title="An architecture map, grounded in your code."
-                                text="Configure Groq and reanalyze to generate this repository’s system diagram."
-                                onSetup={() => setView("settings")}
+                                title="Architecture unavailable"
+                                text="Reanalyze this repository to build its source-based diagram."
                               />
                             )}
                           </Panel>
-                          <Panel title="Code health" icon={ShieldCheck}>
-                            <Health
-                              score={score || 0}
-                              demo={demo}
-                              findings={data?.findings.length || 0}
-                            />
-                            <div className="mx-5 mb-4 border-t border-white/6 pt-3 text-[10px] leading-5 text-zinc-500">
-                              {demo
-                                ? "Illustrative assessment"
-                                : "Pattern-based checks on inspected files. This score does not certify security; excluded files and undetected secrets remain possible."}
-                            </div>
-                          </Panel>
+                        )}
+                        {section === "documentation" && (
                           <Panel
-                            title="Your documentation"
+                            title="Repository documentation"
                             icon={FileText}
                             action={
-                              <span className="text-[9px] text-violet-300">
-                                {demo
-                                  ? "Sample"
-                                  : assets
-                                    ? "AI generated"
-                                    : "Repository source"}
+                              <span className="text-[10px] text-zinc-500">
+                                {assets?.generatedBy ?? "Source analysis"}
                               </span>
                             }
                           >
-                            <button
-                              onClick={() => navigate("documentation")}
-                              className="group flex w-full items-start gap-4 p-5 text-left"
-                            >
-                              <span className="flex h-[76px] w-14 shrink-0 items-center justify-center rounded-lg border border-violet-300/10 bg-violet-400/5 text-violet-300/70">
-                                <FileText size={26} strokeWidth={1.2} />
-                              </span>
-                              <span>
-                                <span className="font-mono text-xs text-zinc-200">
-                                  README.md
-                                </span>
-                                <span className="mt-2 block text-[11px] leading-5 text-zinc-500">
-                                  {readme
-                                    ? "The what, why, and how.\nYour starting point in this codebase."
-                                    : "Generate a contributor-ready README with Groq."}
-                                </span>
-                                <span className="mt-3 block text-[10px] text-violet-400">
-                                  Open documentation →
-                                </span>
-                              </span>
-                            </button>
-                          </Panel>
-                          <Panel title="Tech stack" icon={Boxes}>
-                            <div className="flex flex-wrap gap-2 px-5 pb-4 pt-5">
-                              {techStack.map((tech, index) => (
-                                <span key={tech} className="tech-pill">
-                                  <span
-                                    className={
-                                      index % 2
-                                        ? "text-cyan-300"
-                                        : "text-violet-300"
-                                    }
-                                  >
-                                    ✳
-                                  </span>
-                                  {tech}
-                                </span>
-                              ))}
-                              {!techStack.length && (
-                                <span className="text-xs text-zinc-500">
-                                  No recognized framework manifests in the
-                                  inspected files.
-                                </span>
-                              )}
-                            </div>
-                            <p className="px-5 pb-5 text-[10px] text-zinc-600">
-                              {demo
-                                ? "Example dependencies"
-                                : "Detected from inspected dependency manifests"}
-                            </p>
-                          </Panel>
-                        </div>
-                        <Panel
-                          title="Good places to start"
-                          icon={Braces}
-                          className="mt-5"
-                          action={
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => navigate("tour")}
-                            >
-                              Explore files
-                              <ArrowRight />
-                            </Button>
-                          }
-                        >
-                          <div className="grid divide-y divide-white/6 md:grid-cols-3 md:divide-x md:divide-y-0">
-                            {coreFiles.slice(0, 3).map((file, index) => (
-                              <button
-                                key={file.path}
-                                onClick={() => {
-                                  setTourFile(index);
-                                  navigate("tour");
-                                }}
-                                className="flex min-w-0 items-center gap-3 p-5 text-left hover:bg-white/[0.025]"
-                              >
-                                <span className="font-mono text-[11px] text-zinc-700">
-                                  0{index + 1}
-                                </span>
-                                <FileCode2
-                                  size={18}
-                                  className="shrink-0 text-violet-400/70"
-                                />
-                                <span className="min-w-0">
-                                  <span className="block truncate font-mono text-[11px] text-zinc-300">
-                                    {file.path.split("/").pop()}
-                                  </span>
-                                  <span className="mt-1 block text-[10px] text-zinc-600">
-                                    {file.label}
-                                  </span>
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </Panel>
-                        {!demo && Boolean(data?.findings.length) && (
-                          <Panel
-                            title="Signals to investigate"
-                            icon={ShieldCheck}
-                            className="mt-5"
-                          >
-                            <div className="divide-y divide-white/5">
-                              {data?.findings
-                                .slice(0, 10)
-                                .map((finding, index) => (
-                                  <div
-                                    key={index}
-                                    className="flex items-start gap-3 px-5 py-4"
-                                  >
-                                    <span
-                                      className={cn(
-                                        "mt-0.5 rounded px-2 py-0.5 text-[9px] uppercase",
-                                        finding.severity === "high"
-                                          ? "bg-rose-400/10 text-rose-300"
-                                          : "bg-amber-400/10 text-amber-300",
-                                      )}
-                                    >
-                                      {finding.severity}
-                                    </span>
-                                    <div className="min-w-0">
-                                      <p className="break-words font-mono text-[10px] text-zinc-400">
-                                        {finding.path}:{finding.line}
-                                      </p>
-                                      <p className="mt-1 text-xs leading-5 text-zinc-500">
-                                        {finding.message}
-                                      </p>
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
+                            {readme ? (
+                              <article className="mx-auto max-w-[850px] p-6 sm:p-10">
+                                <Markdown>{readme}</Markdown>
+                              </article>
+                            ) : (
+                              <Empty
+                                title="Documentation unavailable"
+                                text="Reanalyze this repository to generate documentation from the source."
+                              />
+                            )}
                           </Panel>
                         )}
-                        <button
-                          onClick={() => setChat(true)}
-                          className="assistant-banner mt-5 flex w-full items-center gap-4 rounded-xl border border-violet-400/15 px-5 py-4 text-left"
-                        >
-                          <span className="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-300">
-                            <Sparkles size={18} />
-                          </span>
-                          <span className="flex-1">
-                            <span className="text-xs text-zinc-200">
-                              Every codebase has a story. Ask yours.
-                            </span>
-                            <span className="mt-1 block text-[11px] text-zinc-500">
-                              {demo
-                                ? "Try a sample conversation."
-                                : data?.namespace && config.groq
-                                  ? "Answers grounded in your indexed source, with citations."
-                                  : "Connect Groq and Pinecone to enable codebase conversations."}
-                            </span>
-                          </span>
-                          <ArrowRight size={15} className="text-violet-300" />
-                        </button>
+                        {section === "tour" && (
+                          <CodeTour
+                            key={`${selected}:${tourPath}`}
+                            initialPath={tourPath}
+                            entries={treeEntries}
+                            highlights={coreFiles}
+                            repositoryId={selected}
+                            commitUrl={data?.repository.url}
+                            commitSha={data?.commitSha}
+                            complete={Boolean(data.repository.entries)}
+                          />
+                        )}
                       </>
                     )}
-                    {section === "architecture" && (
-                      <Panel
-                        title="System architecture"
-                        icon={Network}
-                        action={
-                          diagram && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                downloadText("architecture.mmd", diagram)
-                              }
-                            >
-                              <ArrowDownToLine />
-                              Export Mermaid
-                            </Button>
-                          )
-                        }
-                      >
-                        {diagram ? (
-                          <>
-                            <ArchitectureMap
-                              expanded
-                              source={diagram}
-                              description={`Architecture for ${name}`}
-                            />
-                            <p className="border-t border-white/8 p-5 text-xs leading-6 text-zinc-500">
-                              {demo
-                                ? "Sample system architecture."
-                                : `Generated from the inspected source at commit ${data?.commitSha.slice(0, 7)}. Review inferred relationships against the source.`}
-                            </p>
-                          </>
-                        ) : (
-                          <Empty
-                            title="Architecture generation needs Groq."
-                            text="Add your Groq key in the server environment and reanalyze this repository."
-                            onSetup={() => setView("settings")}
-                          />
-                        )}
-                      </Panel>
-                    )}
-                    {section === "documentation" && (
-                      <Panel
-                        title="README.md"
-                        icon={FileText}
-                        action={
-                          <span className="text-[10px] text-zinc-500">
-                            {demo
-                              ? "Sample"
-                              : assets
-                                ? assets.generatedBy
-                                : "Original repository README"}
-                          </span>
-                        }
-                      >
-                        {readme ? (
-                          <article className="mx-auto max-w-[850px] p-6 sm:p-10">
-                            <Markdown>{readme}</Markdown>
-                          </article>
-                        ) : (
-                          <Empty
-                            title="A README is waiting to be written."
-                            text="No README was found in this bounded snapshot. Configure Groq and reanalyze to generate one."
-                            onSetup={() => setView("settings")}
-                          />
-                        )}
-                      </Panel>
-                    )}
-                    {section === "tour" && (
-                      <CodeTour
-                        key={`${selected}:${coreFiles.length}:${tourFile}`}
-                        initialFile={tourFile}
-                        files={coreFiles}
-                        demo={demo}
-                      />
-                    )}
-                    {section === "deploy" && (
-                      <DeployGuide
-                        demo={demo}
-                        guides={assets?.deployment}
-                        onSetup={() => setView("settings")}
-                      />
-                    )}
-                  </>
-                )}
-              </motion.div>
-            </AnimatePresence>
-            <footer className="mb-3 mt-8 flex items-center justify-between gap-3 border-t border-white/5 pt-5 text-[10px] text-zinc-600">
-              <span>Less digging. More building.</span>
-              <button
-                onClick={() => setView("files")}
-                className="flex items-center gap-1.5 hover:text-zinc-300"
-              >
-                <FileCode2 size={11} />
-                {demo ? "Sample workspace" : "Inspect source coverage"}
-              </button>
-            </footer>
+                  </motion.div>
+                </AnimatePresence>
+              </>
+            )}
           </main>
         </div>
         <AnimatePresence>
-          {!chat && (
+          {selected && data && !chat && (
             <motion.div
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1150,16 +1009,17 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
             </motion.div>
           )}
         </AnimatePresence>
-        <ChatDrawer
-          key={selected || "demo"}
-          open={chat}
-          onOpenChange={setChat}
-          repositoryId={selected}
-          repositoryName={name}
-          ready={Boolean(
-            active?.status === "ready" && data?.namespace && config.groq,
-          )}
-        />
+        {selected && (
+          <ChatDrawer
+            key={selected}
+            open={chat}
+            onOpenChange={setChat}
+            repositoryId={selected}
+            repositoryName={name}
+            privateHistory={config.database === "supabase"}
+            ready={chatReady}
+          />
+        )}
         <Modal
           open={view === "mobile"}
           onOpenChange={(open) => !open && setView(null)}
@@ -1169,58 +1029,6 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
           <div className="flex max-h-[60dvh] flex-col overflow-auto">
             {sidebar}
           </div>
-        </Modal>
-        <Modal
-          open={view === "settings"}
-          onOpenChange={(open) => !open && setView(null)}
-          title="Workspace integrations"
-          description="Connection status reflects the server configuration. New credentials take effect after restarting the server; reanalyze a repository to generate missing assets."
-        >
-          <div className="space-y-3">
-            {[
-              {
-                label: "Clerk authentication",
-                value: config.clerk
-                  ? "Configured · Sign in to access your data"
-                  : config.local
-                    ? "Development workspace · No sign-in required"
-                    : "Required before production use",
-              },
-              {
-                label: "Groq generation",
-                value: config.groq
-                  ? "Configured"
-                  : "Setup needed · GROQ_API_KEY",
-              },
-              {
-                label: "Pinecone retrieval",
-                value: config.pinecone
-                  ? "Configured"
-                  : "Setup needed · PINECONE_API_KEY + PINECONE_INDEX",
-              },
-              {
-                label: "Saved workspace",
-                value:
-                  config.database === "postgresql"
-                    ? "PostgreSQL"
-                    : "SQLite · Local persistent storage",
-              },
-            ].map((item) => (
-              <div
-                key={item.label}
-                className="rounded-lg border border-white/8 p-3.5"
-              >
-                <p className="text-xs text-zinc-200">{item.label}</p>
-                <p className="mt-1.5 text-[11px] leading-5 text-zinc-500">
-                  {item.value}
-                </p>
-              </div>
-            ))}
-          </div>
-          <p className="mt-5 text-[11px] leading-5 text-zinc-500">
-            Configure secrets in .env.local or your hosting provider. Keys are
-            never stored in the browser.
-          </p>
         </Modal>
         <Modal
           open={view === "search"}
@@ -1239,20 +1047,21 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
             />
           </div>
           <div className="max-h-80 overflow-auto">
-            {navigation
-              .filter((item) =>
-                item.title.toLowerCase().includes(search.toLowerCase()),
-              )
-              .map((item) => (
-                <button
-                  key={item.id}
-                  className="nav-item"
-                  onClick={() => navigate(item.id)}
-                >
-                  <item.icon size={16} />
-                  {item.title}
-                </button>
-              ))}
+            {selected &&
+              navigation
+                .filter((item) =>
+                  item.title.toLowerCase().includes(search.toLowerCase()),
+                )
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    className="nav-item"
+                    onClick={() => navigate(item.id)}
+                  >
+                    <item.icon size={16} />
+                    {item.title}
+                  </button>
+                ))}
             {history
               .filter((repo) =>
                 repo.name.toLowerCase().includes(search.toLowerCase()),
@@ -1270,190 +1079,37 @@ export function Dashboard({ clerkEnabled }: { clerkEnabled: boolean }) {
           </div>
         </Modal>
         <Modal
-          open={view === "files"}
-          onOpenChange={(open) => !open && setView(null)}
-          title="Source coverage"
-          description={
-            demo
-              ? "Select a real repository to inspect its source coverage."
-              : `${data?.files.length || 0} source files inspected at ${data?.commitSha.slice(0, 7) || "the current snapshot"}.`
+          open={view === "delete" && Boolean(deleteTarget)}
+          onOpenChange={(open) => {
+            if (!open && !deleting) {
+              setDeleteTarget(null);
+              setView(null);
+            }
+          }}
+          title={
+            "Delete " + (deleteTarget?.name ?? "repository") + " from history?"
           }
+          description="This removes the analysis from your saved history and deletes its associated chat and index data."
         >
-          <div className="max-h-80 overflow-auto space-y-2 font-mono text-[11px] text-zinc-400">
-            {data?.files.map((file) => (
-              <div key={file.path} className="flex justify-between gap-3">
-                <span className="break-all">{file.path}</span>
-                <span className="shrink-0 text-zinc-600">
-                  {file.lines} lines
-                </span>
-              </div>
-            ))}
+          {deleteError && (
+            <p role="alert" className="mb-4 text-sm text-rose-300">
+              {deleteError}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={deleting}
+              onClick={() => setView(null)}
+            >
+              Cancel
+            </Button>
+            <Button disabled={deleting} onClick={deleteRepository}>
+              {deleting ? "Deleting…" : "Delete from history"}
+            </Button>
           </div>
-        </Modal>
-        <Modal
-          open={view === "help"}
-          onOpenChange={(open) => !open && setView(null)}
-          title="Bring a codebase into focus."
-          description="Paste a public GitHub URL to create a saved source snapshot. Follow real progress as files are fetched, redacted, inspected, and chunked."
-        >
-          <ol className="list-decimal space-y-4 pl-5 text-sm leading-6 text-zinc-400">
-            <li>
-              Browse source files, detected frameworks, and heuristic health
-              signals as soon as source inspection finishes.
-            </li>
-            <li>
-              Configure Groq to generate documentation, architecture, file
-              explanations, and deployment guides.
-            </li>
-            <li>
-              Configure a Pinecone vector index and its hosted embedding model
-              to enable cited codebase chat.
-            </li>
-            <li>
-              Use Clerk and PostgreSQL for a hosted workspace with per-user
-              history and saved conversations.
-            </li>
-          </ol>
         </Modal>
       </div>
     </MotionConfig>
-  );
-}
-
-function Health({
-  score,
-  demo,
-  findings,
-}: {
-  score: number;
-  demo: boolean;
-  findings: number;
-}) {
-  return (
-    <div className="flex items-center gap-5 px-5 pb-4 pt-5">
-      <div className="health-ring relative size-[115px] shrink-0">
-        <svg
-          viewBox="0 0 120 120"
-          className="size-full -rotate-90"
-          aria-label={`${demo ? "Sample" : "Heuristic inspection"} score ${score} out of 100`}
-          role="img"
-        >
-          <circle
-            cx="60"
-            cy="60"
-            r="48"
-            fill="none"
-            stroke="#202027"
-            strokeWidth="6"
-          />
-          <motion.circle
-            cx="60"
-            cy="60"
-            r="48"
-            fill="none"
-            stroke="url(#health-gradient)"
-            strokeWidth="6"
-            strokeLinecap="round"
-            strokeDasharray="301.59"
-            initial={{ strokeDashoffset: 301.59 }}
-            animate={{ strokeDashoffset: 301.59 * (1 - score / 100) }}
-            transition={{ duration: 1 }}
-          />
-          <defs>
-            <linearGradient id="health-gradient">
-              <stop stopColor="#8b5cf6" />
-              <stop offset="1" stopColor="#34d4c5" />
-            </linearGradient>
-          </defs>
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[30px] font-semibold tracking-[-1.5px]">
-            {score}
-            <span className="ml-1 text-xs tracking-normal text-zinc-600">
-              /100
-            </span>
-          </span>
-          <span className="text-[9px] text-violet-300">
-            {demo ? "Sample score" : "Inspected files"}
-          </span>
-        </div>
-      </div>
-      <div className="space-y-3 text-[11px] text-zinc-500">
-        <p>
-          <span className="mr-2 text-violet-400">●</span>
-          {demo ? "Illustrative signals" : `${findings} signals found`}
-        </p>
-        <p>
-          <span className="mr-2 text-cyan-400">●</span>Source-aware checks
-        </p>
-        <p>
-          <span className="mr-2 text-amber-300">●</span>Review recommended
-        </p>
-      </div>
-    </div>
-  );
-}
-function DeployGuide({
-  demo,
-  guides,
-  onSetup,
-}: {
-  demo: boolean;
-  guides?: { vercel: string; docker: string; aws: string };
-  onSetup: () => void;
-}) {
-  const [target, setTarget] = useState<"vercel" | "docker" | "aws">("vercel");
-  const sample = {
-    vercel:
-      "## Vercel · Sample storefront\n\n1. Import the Next.js repository in Vercel.\n2. Configure database, Clerk, and payment environment variables.\n3. Generate Prisma's client in the build and apply migrations as a release step.\n4. Deploy and verify the production domain and webhook configuration.",
-    docker:
-      "## Docker · Sample storefront\n\n1. Enable Next.js standalone output.\n2. Build with a multi-stage Dockerfile and copy the standalone server, static assets, and public directory.\n3. Inject runtime credentials and expose port 3000.\n4. Run database migrations in a release job.",
-    aws: "## AWS · Sample storefront\n\n1. Publish a production container to ECR.\n2. Provision an RDS PostgreSQL database.\n3. Deploy an ECS Fargate service behind an HTTPS load balancer.\n4. Supply credentials through Secrets Manager and verify application health.",
-  };
-  const value = demo ? sample[target] : guides?.[target];
-  return (
-    <Panel
-      title="Your launch checklist"
-      icon={Rocket}
-      action={
-        <span className="text-[10px] text-zinc-500">
-          {demo ? "Sample guide" : "AI generated · Review before use"}
-        </span>
-      }
-    >
-      <div className="flex gap-2 border-b border-white/8 p-4">
-        {(["vercel", "docker", "aws"] as const).map((item) => (
-          <Button
-            key={item}
-            variant={target === item ? "default" : "outline"}
-            size="sm"
-            onClick={() => setTarget(item)}
-          >
-            {item === "aws"
-              ? "AWS"
-              : item.charAt(0).toUpperCase() + item.slice(1)}
-          </Button>
-        ))}
-      </div>
-      {value ? (
-        <article className="max-w-[850px] p-6 sm:p-9">
-          <Markdown>{value}</Markdown>
-          <Button
-            variant="outline"
-            className="mt-5"
-            onClick={() => downloadText(`deploy-${target}.md`, value)}
-          >
-            <ArrowDownToLine />
-            Download guide
-          </Button>
-        </article>
-      ) : (
-        <Empty
-          title="A launch plan for this repository."
-          text="Configure Groq and reanalyze to generate architecture-specific guidance. No deployment is performed automatically."
-          onSetup={onSetup}
-        />
-      )}
-    </Panel>
   );
 }

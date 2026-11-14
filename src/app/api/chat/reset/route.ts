@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     sameOrigin(request);
     const owner = await actor(),
       body = await readJson(request, 1000),
-      store = await workspaceStore();
+      store = await workspaceStore(owner);
     if (!body || typeof body.repositoryId !== "string")
       throw new AppError("Select a repository.");
     await store.get(owner, body.repositoryId);

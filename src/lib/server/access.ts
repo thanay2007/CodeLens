@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { AppError, publicError } from "./errors";
 import type { ServiceConfiguration } from "../types";
 
@@ -9,22 +9,47 @@ export function configuration(): ServiceConfiguration {
       process.env.CLERK_SECRET_KEY &&
       process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
     ),
+    gemini: Boolean(process.env.GEMINI_API_KEY),
     groq: Boolean(process.env.GROQ_API_KEY),
     pinecone: Boolean(
       process.env.PINECONE_API_KEY && process.env.PINECONE_INDEX,
     ),
-    database: process.env.DATABASE_URL ? "postgresql" : "sqlite",
+    database: process.env.SUPABASE_DATABASE_URL
+      ? "supabase"
+      : process.env.DATABASE_URL
+        ? "postgresql"
+        : "sqlite",
     local: process.env.NODE_ENV !== "production",
   };
 }
 export async function actor() {
   if (configuration().clerk) {
     const { auth } = await import("@clerk/nextjs/server");
-    const { userId } = await auth();
+    const { userId, actor: impersonator } = await auth();
     if (!userId) throw new AppError("Sign in to access your workspace.", 401);
+    if (impersonator)
+      throw new AppError(
+        "Open your workspace from your own signed-in session.",
+        403,
+      );
+    if (process.env.SUPABASE_DATABASE_URL) {
+      const key = process.env.CODELENS_HISTORY_KEY;
+      if (!key || !/^[\da-f]{64}$/i.test(key))
+        throw new AppError(
+          "The server history key is missing or invalid.",
+          503,
+        );
+      return createHmac("sha256", Buffer.from(key, "hex"))
+        .update("CodeLens history owner:")
+        .update(userId)
+        .digest("hex");
+    }
     return createHash("sha256").update(userId).digest("hex");
   }
-  if (process.env.NODE_ENV === "production")
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.SUPABASE_DATABASE_URL
+  )
     throw new AppError(
       "Configure Clerk authentication before using a production workspace.",
       503,

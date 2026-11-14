@@ -2,6 +2,8 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { getPinecone } from "./clients";
 import { AppError } from "./errors";
+import { GitHubClient } from "./github";
+import { chunkFiles } from "./source-analysis";
 import type { CodeChunk, RepositoryRecord } from "../types";
 
 export function namespaceFor(owner: string, id: string, run: string) {
@@ -61,7 +63,7 @@ export async function indexChunks(
     return namespace;
   } catch (error) {
     // Each run has a dedicated namespace; cleanup never touches another user's vectors.
-    await getPinecone()
+    await getPinecone(AbortSignal.timeout(5000))
       .index(name)
       .namespace(namespace)
       .deleteAll()
@@ -70,11 +72,20 @@ export async function indexChunks(
   }
 }
 export async function deleteNamespace(namespace: string) {
-  if (process.env.PINECONE_API_KEY && process.env.PINECONE_INDEX)
+  if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX)
+    throw new AppError(
+      "Configure the snapshot's Pinecone index to delete its embeddings.",
+      503,
+    );
+  try {
     await getPinecone()
       .index(process.env.PINECONE_INDEX)
       .namespace(namespace)
       .deleteAll();
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "PineconeNotFoundError")
+      throw error;
+  }
 }
 export async function retrieve(
   repo: RepositoryRecord,
@@ -82,22 +93,86 @@ export async function retrieve(
   signal: AbortSignal,
 ) {
   const data = repo.data;
-  if (!data?.namespace || !data.embeddingModel || !process.env.PINECONE_INDEX)
-    throw new AppError(
-      "This snapshot is not indexed yet. Configure Pinecone, then run a new analysis.",
-      409,
+  if (!data) return [];
+  if (
+    data.namespace &&
+    data.embeddingModel &&
+    process.env.PINECONE_INDEX &&
+    process.env.PINECONE_API_KEY
+  ) {
+    try {
+      const matches = await semanticMatches(
+        data,
+        question,
+        AbortSignal.any([signal, AbortSignal.timeout(12_000)]),
+      );
+      if (matches.length) return matches;
+    } catch {
+      signal.throwIfAborted();
+    }
+  }
+  const terms = [
+    ...new Set(question.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []),
+  ].filter(
+    (word) =>
+      !/^(the|and|why|how|what|where|does|this|with|can|for|are|explain|work)$/.test(
+        word,
+      ),
+  );
+  const score = (path: string, content: string) => {
+    const name = path.toLowerCase();
+    const text = content.toLowerCase();
+    return terms.reduce(
+      (sum, term) =>
+        sum + (name.includes(term) ? 4 : 0) + (text.includes(term) ? 1 : 0),
+      0,
     );
+  };
+  let chunks = data.chunks;
+  if (!chunks.length) {
+    const github = new GitHubClient(signal);
+    const files = data.files.length
+      ? data.files
+      : await Promise.all(
+          (data.repository.entries ?? [])
+            .filter((entry) => entry.preview === "text")
+            .sort((a, b) => score(b.path, "") - score(a.path, ""))
+            .slice(0, 5)
+            .map((entry) =>
+              github.source(data.repository.url, data.commitSha, entry.path),
+            ),
+        ).then((results) =>
+          results.flatMap((result) => (result ? [result.file] : [])),
+        );
+    chunks = await chunkFiles(files, signal);
+  }
+  return chunks
+    .map((chunk) => ({ chunk, score: score(chunk.path, chunk.content) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map(({ chunk }) => chunk);
+}
+
+async function semanticMatches(
+  data: NonNullable<RepositoryRecord["data"]>,
+  question: string,
+  signal: AbortSignal,
+) {
   const client = getPinecone(signal);
-  const result = await client.inference.embed(data.embeddingModel, [question], {
-    inputType: "query",
-    truncate: "END",
-  });
+  const result = await client.inference.embed(
+    data.embeddingModel!,
+    [question],
+    {
+      inputType: "query",
+      truncate: "END",
+    },
+  );
   const embedding = result.data[0];
   if (!embedding || embedding.vectorType !== "dense")
     throw new Error("A dense query embedding is required.");
   const matches = await client
-    .index(process.env.PINECONE_INDEX)
-    .namespace(data.namespace)
+    .index(process.env.PINECONE_INDEX!)
+    .namespace(data.namespace!)
     .query({
       vector: embedding.values,
       topK: 6,
@@ -105,6 +180,38 @@ export async function retrieve(
       filter: { commitSha: { $eq: data.commitSha } },
     });
   const byId = new Map(data.chunks.map((chunk) => [chunk.id, chunk]));
+  if (!byId.size) {
+    // Supabase stores history and analysis summaries. Fetch matched source on demand.
+    const paths = new Set(
+      matches.matches
+        .map((match) => match.metadata?.path)
+        .filter(
+          (path): path is string =>
+            typeof path === "string" &&
+            Boolean(
+              data.repository.entries?.some(
+                (entry) =>
+                  entry.path === path &&
+                  entry.kind === "file" &&
+                  entry.preview === "text",
+              ),
+            ),
+        ),
+    );
+    const github = new GitHubClient(signal);
+    await Promise.all(
+      [...paths].map(async (path) => {
+        const source = await github.source(
+          data.repository.url,
+          data.commitSha,
+          path,
+        );
+        if (source)
+          for (const chunk of await chunkFiles([source.file]))
+            byId.set(chunk.id, chunk);
+      }),
+    );
+  }
   return matches.matches
     .map((match) => byId.get(match.id))
     .filter((chunk): chunk is CodeChunk => Boolean(chunk));

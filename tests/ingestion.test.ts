@@ -12,8 +12,14 @@ import { namespaceFor } from "../src/lib/server/vectors.ts";
 const sha = "a".repeat(40),
   blobSha = "b".repeat(40);
 
-test("full ingestion fetches pinned blobs, saves real source, and exposes missing-service states", async () => {
+test("ingestion inspects the entire pinned tree and generates source-based assets without Groq", async () => {
   const calls: string[] = [];
+  const manyFiles = Array.from({ length: 48 }, (_, index) => ({
+    path: `${index === 0 ? "shared" : "src/nested"}/file-${index}.ts`,
+    type: "blob",
+    mode: "100644",
+    sha: blobSha,
+  }));
   const fetcher: typeof fetch = async (input) => {
     const url = String(input);
     calls.push(url);
@@ -32,6 +38,7 @@ test("full ingestion fetches pinned blobs, saves real source, and exposes missin
       return Response.json({
         truncated: false,
         tree: [
+          ...manyFiles,
           {
             path: "src/main.ts",
             type: "blob",
@@ -46,15 +53,32 @@ test("full ingestion fetches pinned blobs, saves real source, and exposes missin
             size: 20,
             sha: "c".repeat(40),
           },
+          {
+            path: "assets/image.png",
+            type: "blob",
+            mode: "100644",
+            sha: blobSha,
+          },
+          {
+            path: "vendor/submodule",
+            type: "commit",
+            mode: "160000",
+            sha: blobSha,
+          },
+          { path: "link", type: "blob", mode: "120000", sha: blobSha },
         ],
       });
-    if (url.endsWith(`/git/blobs/${blobSha}`))
-      return Response.json({
-        encoding: "base64",
-        content: Buffer.from(
-          "export function hello() { return 'world'; }",
-        ).toString("base64"),
-      });
+    if (url.endsWith("assets/image.png"))
+      return new Response(new Uint8Array([0, 0xff]));
+    if (url.includes(`raw.githubusercontent.com/acme/repo/${sha}/`)) {
+      return new Response(
+        (url.endsWith("src/main.ts")
+          ? 'import { value } from "../shared/file-0";\n'
+          : "") +
+          'const router = {}; router.get("/hello", handler);\n' +
+          "// source evidence\n".repeat(2000),
+      );
+    }
     throw new Error("Unexpected request " + url);
   };
   const db = await initializeDatabase(await openDatabase(":memory:"));
@@ -70,26 +94,82 @@ test("full ingestion fetches pinned blobs, saves real source, and exposes missin
       generate: async () => {
         throw new Error("Must not call Groq without keys");
       },
-      index: async () => {
-        throw new Error("Must not call Pinecone without keys");
+      index: async (_repo, chunks, _signal, progress) => {
+        assert.ok(chunks.length > 300);
+        await progress(chunks.length - 1);
+        throw new DOMException("Embedding timed out", "TimeoutError");
       },
-      services: { groq: false, pinecone: false },
+      services: { groq: false, pinecone: true },
     });
     const result = await store.get("alice", repo.id);
-    assert.equal(result.status, "ready");
+    assert.equal(
+      result.status,
+      "ready",
+      result.error || "Analysis should complete",
+    );
     assert.equal(result.progress, 100);
     assert.equal(result.data?.commitSha, sha);
-    assert.equal(result.data?.files.length, 1);
-    assert.equal(result.data?.skippedFiles, 1);
-    assert.ok(result.data?.chunks.length);
-    assert.equal(result.data?.assets, null);
+    assert.equal(result.data?.files.length, 49);
+    assert.equal(result.data?.skippedFiles, 4);
+    assert.equal(result.data?.repository.entries?.length, 53);
+    assert.ok(result.data!.chunks.length > 300);
+    assert.match(result.data!.assets!.readme, /GET \/hello/);
+    assert.match(result.data!.assets!.architecture, /^flowchart LR/);
+    assert.match(result.data!.assets!.architecture, /-->\|imports\|/);
+    assert.match(
+      result.data!.assets!.readme,
+      /Imports across top-level folders/,
+    );
     assert.equal(result.data?.namespace, null);
-    assert.ok(result.data?.warnings.some((w) => w.includes("GROQ_API_KEY")));
+    assert.ok(
+      result.data?.warnings.some((w) =>
+        w.includes("semantic index could not finish"),
+      ),
+    );
     assert.ok(calls.some((url) => url.includes(`/git/trees/${sha}`)));
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 54);
+    assert.ok(!calls.some((url) => url.endsWith("/.env")));
+    await db.query(
+      "UPDATE repositories SET status='failed',progress=88,error=$1 WHERE id=$2",
+      ["Analysis reached the server's execution timeout.", repo.id],
+    );
+    await store.expire("alice", repo.id);
+    const recovered = await store.get("alice", repo.id);
+    assert.equal(recovered.status, "ready");
+    assert.equal(recovered.error, null);
+    assert.equal(recovered.data?.commitSha, sha);
   } finally {
     await db.close();
   }
+});
+
+test("truncated recursive trees are rebuilt from individual GitHub directories", async () => {
+  const client = new GitHubClient(
+    new AbortController().signal,
+    async (input) => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/repo"))
+        return Response.json({
+          full_name: "acme/repo",
+          default_branch: "main",
+        });
+      if (url.includes("/git/ref/")) return Response.json({ object: { sha } });
+      if (url.includes("/git/commits/"))
+        return Response.json({ tree: { sha } });
+      if (url.endsWith("?recursive=1"))
+        return Response.json({ tree: [], truncated: true });
+      if (url.endsWith(sha))
+        return Response.json({
+          tree: [{ path: "src", type: "tree", sha: blobSha }],
+        });
+      return Response.json({
+        tree: [{ path: "index", type: "blob", mode: "100644" }],
+      });
+    },
+  );
+  const snapshot = await client.snapshot("https://github.com/acme/repo");
+  assert.deepEqual(snapshot.repository.paths, ["src/index"]);
+  assert.equal(snapshot.repository.truncated, false);
 });
 
 test("private repositories are refused even with a server token", async () => {

@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-browser/
 out/
 dist/
 .env*
@@ -11,5 +12,7 @@ next-env.d.ts
 .vercel/
 .openai/
 coverage/
+playwright-report/
+test-results/
 .data/
 *.sqlite*

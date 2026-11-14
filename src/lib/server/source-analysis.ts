@@ -2,20 +2,10 @@ import { createHash } from "node:crypto";
 import type { CodeChunk, CoreFile, Finding, SourceFile } from "../types";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 
-const blocked =
-  /(^|\/)(node_modules|vendor|dist|build|coverage|\.git|\.next|\.venv|venv|__pycache__|target|generated|fixtures|__snapshots__)(\/|$)|(^|\/)(\.env[^/]*|\.npmrc|\.pypirc|credentials[^/]*|secrets?[^/]*|id_rsa[^/]*|id_ed25519[^/]*)(\/|$)|(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|poetry\.lock|Pipfile\.lock|Cargo\.lock|composer\.lock|\.min\.js|\.map|\.snap)$|\.(pem|key|crt|p12|pfx)$/i;
-const allowed =
-  /\.(tsx?|jsx?|mjs|cjs|py|go|rs|java|kt|rb|php|cs|cpp|c|h|swift|vue|svelte|json|toml|ya?ml|md|sql|graphql|prisma|css|scss|html|sh)$/i;
+const protectedPath =
+  /(^|\/)(\.env[^/]*|\.npmrc|\.pypirc|credentials[^/]*|secrets?[^/]*|id_rsa[^/]*|id_ed25519[^/]*)(\/|$)|\.(pem|key|p12|pfx|jks|keystore)$/i;
 export function eligiblePath(path: string) {
-  return (
-    path.length <= 300 &&
-    !path.includes("\\") &&
-    !blocked.test(path) &&
-    (allowed.test(path) ||
-      /(^|\/)(Dockerfile|requirements\.txt|go\.mod|Gemfile|Procfile)$/.test(
-        path,
-      ))
-  );
+  return !protectedPath.test(path);
 }
 export function filePriority(path: string) {
   if (
@@ -35,6 +25,8 @@ export function filePriority(path: string) {
   return 50 - Math.min(path.split("/").length, 20);
 }
 export function languageFor(path: string) {
+  if (/^dockerfile(?:\.|$)/i.test(path.split("/").at(-1) ?? ""))
+    return "docker";
   const ext = path.split(".").pop()?.toLowerCase();
   return (
     (
@@ -42,6 +34,10 @@ export function languageFor(path: string) {
         ts: "typescript",
         tsx: "tsx",
         js: "javascript",
+        mjs: "javascript",
+        cjs: "javascript",
+        mts: "typescript",
+        cts: "typescript",
         jsx: "jsx",
         py: "python",
         rs: "rust",
@@ -55,6 +51,13 @@ export function languageFor(path: string) {
         sql: "sql",
         css: "css",
         html: "html",
+        xml: "markup",
+        svg: "markup",
+        toml: "toml",
+        cs: "csharp",
+        cpp: "cpp",
+        cc: "cpp",
+        hpp: "cpp",
       } as Record<string, string>
     )[ext || ""] || "text"
   );
@@ -207,9 +210,13 @@ export function selectCoreFiles(files: SourceFile[]): CoreFile[] {
       description: `Selected from the inspected source snapshot. ${file.path} is prioritized by its entry-point, configuration, or service-layer role; inspect the code below to confirm its responsibility.`,
     }));
 }
-export async function chunkFiles(files: SourceFile[]): Promise<CodeChunk[]> {
+export async function chunkFiles(
+  files: SourceFile[],
+  signal?: AbortSignal,
+): Promise<CodeChunk[]> {
   const chunks: CodeChunk[] = [];
   for (const file of files) {
+    signal?.throwIfAborted();
     const language =
       file.language === "python"
         ? "python"
@@ -227,7 +234,6 @@ export async function chunkFiles(files: SourceFile[]): Promise<CodeChunk[]> {
       [{ path: file.path }],
     );
     for (const [index, doc] of docs.entries()) {
-      if (chunks.length >= 300) return chunks;
       const loc = doc.metadata.loc?.lines;
       const startLine = Number(loc?.from || 1),
         endLine = Math.min(file.lines, Number(loc?.to || startLine));
@@ -244,15 +250,4 @@ export async function chunkFiles(files: SourceFile[]): Promise<CodeChunk[]> {
     }
   }
   return chunks;
-}
-export function healthScore(findings: Finding[]) {
-  return Math.max(
-    0,
-    100 -
-      findings.reduce(
-        (sum, finding) =>
-          sum + { high: 18, medium: 7, low: 2 }[finding.severity],
-        0,
-      ),
-  );
 }
