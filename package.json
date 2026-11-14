@@ -1,19 +1,20 @@
 {
   "name": "codelens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
   },
   "scripts": {
-    "dev": "next dev --webpack",
+    "dev": "next dev --webpack --hostname localhost",
     "build": "next build --webpack",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "format": "prettier --write src tests README.md *.json *.ts *.mjs .github/workflows/*.yml",
-    "format:check": "prettier --check src tests README.md *.json *.ts *.mjs .github/workflows/*.yml"
+    "test": "node --import tsx --conditions=react-server --test tests/*.test.ts",
+    "smoke": "node scripts/smoke-live.mjs",
+    "format": "prettier --write src tests scripts *.md *.json *.ts *.mjs .github/workflows/*.yml",
+    "format:check": "prettier --check src tests scripts *.md *.json *.ts *.mjs .github/workflows/*.yml"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.25",
@@ -30,13 +31,15 @@
     "lucide-react": "^1.70.0",
     "mermaid": "^12.3.0",
     "next": "^16.4.5",
+    "postgres": "^4.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.2",
     "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.5",
@@ -46,6 +49,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "prettier": "^3.9.10",
     "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

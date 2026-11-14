@@ -1,122 +1,56 @@
-import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { after } from "next/server";
+import {
+  actor,
+  errorResponse,
+  readJson,
+  sameOrigin,
+} from "@/lib/server/access";
 import { parseGitHubUrl } from "@/lib/github-url";
-import type { RepositoryPreview } from "@/lib/types";
+import { workspaceStore, summary } from "@/lib/server/store";
+import { runIngestion } from "@/lib/server/ingestion";
+import { AppError } from "@/lib/server/errors";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
-class GitHubError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-  ) {
-    super(message);
+export async function GET() {
+  try {
+    const owner = await actor(),
+      store = await workspaceStore();
+    await store.quota(owner, "read", 120, 60_000);
+    return Response.json(
+      { repositories: await store.list(owner) },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (error) {
+    return errorResponse(error);
   }
-}
-
-async function github(path: string) {
-  const response = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(process.env.GITHUB_TOKEN
-        ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-        : {}),
-    },
-    signal: AbortSignal.timeout(15_000),
-    cache: "no-store",
-  });
-  if (response.status === 404)
-    throw new GitHubError(
-      "Repository not found. Check the URL and make sure the repository is public.",
-      404,
-    );
-  if (response.status === 403 || response.status === 429)
-    throw new GitHubError(
-      "GitHub's API limit was reached. Try again later, or configure a server-side GITHUB_TOKEN.",
-      429,
-    );
-  if (response.status === 409)
-    throw new GitHubError(
-      "This repository is empty. Add a commit before inspecting its file tree.",
-      422,
-    );
-  if (!response.ok)
-    throw new GitHubError(
-      "GitHub could not complete this request. Please try again.",
-      502,
-    );
-  return response.json();
 }
 
 export async function POST(request: Request) {
-  // Public, bounded preview without credentials; enabling Clerk requires a session.
-  if (
-    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
-    process.env.CLERK_SECRET_KEY
-  ) {
-    const { userId } = await auth();
-    if (!userId)
-      return NextResponse.json(
-        { error: "Sign in to inspect a repository." },
-        { status: 401 },
-      );
-  }
-  const body = await request.json().catch(() => null);
-  if (!body || typeof body.url !== "string" || body.url.length > 300) {
-    return NextResponse.json(
-      { error: "Provide a valid GitHub repository URL." },
-      { status: 400 },
-    );
-  }
-  let repository: ReturnType<typeof parseGitHubUrl>;
   try {
-    repository = parseGitHubUrl(body.url);
+    sameOrigin(request);
+    const owner = await actor(),
+      body = await readJson(request, 1000);
+    if (!body || typeof body.url !== "string" || body.url.length > 300)
+      throw new AppError("Enter a public GitHub repository URL.");
+    let parsed;
+    try {
+      parsed = parseGitHubUrl(body.url);
+    } catch (error) {
+      throw new AppError((error as Error).message);
+    }
+    const store = await workspaceStore();
+    await store.quota(owner, "ingestion-hour", 10, 3_600_000);
+    await store.quota(owner, "ingestion-day", 30, 86_400_000);
+    const repo = await store.create(
+      owner,
+      `https://github.com/${parsed.owner}/${parsed.repo}`,
+      `${parsed.owner}/${parsed.repo}`,
+    );
+    after(() => runIngestion(owner, repo.id));
+    return Response.json(summary(repo), { status: 202 });
   } catch (error) {
-    return NextResponse.json(
-      { error: (error as Error).message },
-      { status: 400 },
-    );
-  }
-  try {
-    const path = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`;
-    const metadata = await github(path);
-    // A server token must never turn this public-only endpoint into private repo access.
-    if (metadata.private)
-      throw new GitHubError(
-        "Only public repositories are supported in this starter.",
-        403,
-      );
-    const tree = await github(
-      `${path}/git/trees/${encodeURIComponent(metadata.default_branch)}?recursive=1`,
-    );
-    const files = (tree.tree as { type: string; path: string }[]).filter(
-      (item) => item.type === "blob",
-    );
-    const preview: RepositoryPreview = {
-      fullName: metadata.full_name,
-      description:
-        metadata.description || "No repository description provided.",
-      url: metadata.html_url,
-      branch: metadata.default_branch,
-      language: metadata.language,
-      stars: metadata.stargazers_count,
-      fileCount: files.length,
-      truncated: Boolean(tree.truncated),
-      paths: files.slice(0, 60).map((item) => item.path),
-    };
-    return NextResponse.json(preview, {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (error) {
-    if (error instanceof GitHubError)
-      return NextResponse.json(
-        { error: error.message },
-        { status: error.status },
-      );
-    return NextResponse.json(
-      { error: "Unable to reach GitHub. Check your connection and try again." },
-      { status: 502 },
-    );
+    return errorResponse(error);
   }
 }

@@ -8,13 +8,17 @@ import {
   Plus,
   RotateCcw,
 } from "lucide-react";
-import { architecture } from "@/lib/demo";
+import { architecture as demoArchitecture } from "@/lib/demo";
 import { Button } from "@/components/ui/button";
 
 export default function ArchitectureMap({
   expanded = false,
+  source = demoArchitecture,
+  description = "Sample architecture: Next.js connects to API routes and Vercel Edge. API routes connect to PostgreSQL, Clerk, and Stripe.",
 }: {
   expanded?: boolean;
+  source?: string;
+  description?: string;
 }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
   const container = useRef<HTMLDivElement>(null);
@@ -25,6 +29,7 @@ export default function ArchitectureMap({
 
   useEffect(() => {
     let cancelled = false;
+    setStatus("loading");
     async function render() {
       try {
         const { default: mermaid } = await import("mermaid");
@@ -49,7 +54,8 @@ export default function ArchitectureMap({
             useMaxWidth: true,
           },
         });
-        const result = await mermaid.render(`architecture-${id}`, architecture);
+        await mermaid.parse(source);
+        const result = await mermaid.render(`architecture-${id}`, source);
         if (!cancelled && container.current) {
           // Mermaid's strict mode sanitizes generated SVG; never render model HTML.
           container.current.innerHTML = result.svg;
@@ -63,7 +69,7 @@ export default function ArchitectureMap({
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, source]);
 
   return (
     <div
@@ -72,7 +78,7 @@ export default function ArchitectureMap({
       <div className="absolute left-5 top-4 flex items-center gap-2 text-[10px] uppercase tracking-widest text-zinc-500">
         <span className="size-1.5 rounded-full bg-emerald-400" /> System
         overview <span className="ml-1 text-zinc-600">/</span>{" "}
-        <span>6 nodes</span>
+        <span>Source relationships</span>
       </div>
       {status === "loading" && (
         <div
@@ -99,7 +105,7 @@ export default function ArchitectureMap({
         <div
           ref={container}
           role="img"
-          aria-label="Sample architecture: Next.js connects to API routes and Vercel Edge. API routes connect to PostgreSQL, Clerk, and Stripe."
+          aria-label={description}
           className={`mermaid-diagram w-full transition-transform duration-200 ${status !== "ready" ? "invisible" : ""}`}
           style={{ transform: `scale(${zoom})`, transformOrigin: "center" }}
         />
