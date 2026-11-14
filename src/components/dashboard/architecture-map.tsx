@@ -8,17 +8,16 @@ import {
   Plus,
   RotateCcw,
 } from "lucide-react";
-import { architecture as demoArchitecture } from "@/lib/demo";
 import { Button } from "@/components/ui/button";
 
 export default function ArchitectureMap({
   expanded = false,
-  source = demoArchitecture,
-  description = "Sample architecture: Next.js connects to API routes and Vercel Edge. API routes connect to PostgreSQL, Clerk, and Stripe.",
+  source,
+  description,
 }: {
   expanded?: boolean;
-  source?: string;
-  description?: string;
+  source: string;
+  description: string;
 }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
   const container = useRef<HTMLDivElement>(null);
@@ -39,7 +38,9 @@ export default function ArchitectureMap({
           theme: "base",
           themeVariables: {
             background: "#101015",
+            primaryColor: "#251b3e",
             primaryTextColor: "#e4e4e7",
+            primaryBorderColor: "#8863ce",
             lineColor: "#5a4a79",
             fontFamily: "ui-monospace, monospace",
             fontSize: "12px",
@@ -54,12 +55,12 @@ export default function ArchitectureMap({
             useMaxWidth: true,
           },
         });
-        await mermaid.parse(source);
         const result = await mermaid.render(`architecture-${id}`, source);
         if (!cancelled && container.current) {
           // Mermaid's strict mode sanitizes generated SVG; never render model HTML.
           container.current.innerHTML = result.svg;
           setStatus("ready");
+          result.bindFunctions?.(container.current);
         }
       } catch {
         if (!cancelled) setStatus("error");
@@ -109,20 +110,6 @@ export default function ArchitectureMap({
           className={`mermaid-diagram w-full transition-transform duration-200 ${status !== "ready" ? "invisible" : ""}`}
           style={{ transform: `scale(${zoom})`, transformOrigin: "center" }}
         />
-      </div>
-      <div className="absolute bottom-4 left-5 flex gap-4 text-[10px] text-zinc-500">
-        <span className="flex items-center gap-1.5">
-          <i className="size-1.5 rounded-full bg-violet-400" />
-          Frontend
-        </span>
-        <span className="flex items-center gap-1.5">
-          <i className="size-1.5 rounded-full bg-cyan-400" />
-          Backend
-        </span>
-        <span className="flex items-center gap-1.5">
-          <i className="size-1.5 rounded-full bg-zinc-500" />
-          Services
-        </span>
       </div>
       <div className="absolute bottom-3 right-4 flex rounded-lg border border-white/8 bg-[#141419] p-0.5">
         <Button

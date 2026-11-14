@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { demoQuestions, getDemoAnswer } from "@/lib/demo";
 import { consumeChatStream } from "@/lib/chat-stream";
 import type { ChatMessage } from "@/lib/types";
 import { Markdown } from "./markdown";
@@ -25,24 +24,27 @@ export function ChatDrawer({
   repositoryId,
   repositoryName,
   ready,
+  privateHistory = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  repositoryId: string | null;
+  repositoryId: string;
   repositoryName: string;
   ready: boolean;
+  privateHistory?: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]),
     [question, setQuestion] = useState("");
   const [pending, setPending] = useState(false),
     [error, setError] = useState("");
-  const [historyLoading, setHistoryLoading] = useState(Boolean(repositoryId));
+  const [historyLoading, setHistoryLoading] = useState(
+    Boolean(repositoryId && !privateHistory),
+  );
   const bottom = useRef<HTMLDivElement>(null),
     request = useRef<AbortController | null>(null);
-  const reduceMotion = useReducedMotion(),
-    demo = !repositoryId;
+  const reduceMotion = useReducedMotion();
   useEffect(() => {
-    if (!repositoryId) return;
+    if (!repositoryId || privateHistory) return;
     const controller = new AbortController();
     fetch(`/api/chat?repositoryId=${encodeURIComponent(repositoryId)}`, {
       signal: controller.signal,
@@ -62,7 +64,7 @@ export function ChatDrawer({
       controller.abort();
       request.current?.abort();
     };
-  }, [repositoryId]);
+  }, [repositoryId, privateHistory]);
   useEffect(() => {
     bottom.current?.scrollIntoView({
       behavior: reduceMotion ? "instant" : "smooth",
@@ -71,7 +73,7 @@ export function ChatDrawer({
 
   async function send(value: string) {
     const text = value.trim();
-    if (!text || pending || historyLoading || (!demo && !ready)) return;
+    if (!text || pending || historyLoading || !ready) return;
     setQuestion("");
     setError("");
     setPending(true);
@@ -82,17 +84,6 @@ export function ChatDrawer({
       { id: userId, role: "user", content: text },
       { id: answerId, role: "assistant", content: "" },
     ]);
-    if (demo) {
-      setMessages((previous) =>
-        previous.map((message) =>
-          message.id === answerId
-            ? { ...message, content: getDemoAnswer(text) }
-            : message,
-        ),
-      );
-      setPending(false);
-      return;
-    }
     request.current = new AbortController();
     try {
       const response = await fetch("/api/chat", {
@@ -122,7 +113,7 @@ export function ChatDrawer({
     } catch (err) {
       setError(
         (err as Error).name === "AbortError"
-          ? "Generation stopped. The partial answer was not saved."
+          ? "Generation stopped."
           : (err as Error).message,
       );
     } finally {
@@ -131,7 +122,7 @@ export function ChatDrawer({
   }
   async function reset() {
     if (pending) return;
-    if (repositoryId) {
+    if (repositoryId && !privateHistory) {
       try {
         const response = await fetch("/api/chat/reset", {
           method: "POST",
@@ -179,7 +170,9 @@ export function ChatDrawer({
                     </Dialog.Title>
                     <Dialog.Description className="mt-1 truncate text-xs text-zinc-500">
                       {repositoryName} ·{" "}
-                      {demo ? "Demo conversation" : "Source-grounded answers"}
+                      {privateHistory
+                        ? "Session-only conversation"
+                        : "Source-grounded answers"}
                     </Dialog.Description>
                   </div>
                   <Button
@@ -220,17 +213,19 @@ export function ChatDrawer({
                           Meet your codebase.
                         </h2>
                         <p className="mt-3 text-sm leading-6 text-zinc-400">
-                          {demo
-                            ? "Try a sample question to explore the fictional storefront."
-                            : ready
-                              ? "Ask about architecture, data flows, or implementation details. Answers cite the inspected source snapshot."
-                              : "This snapshot needs Groq and a completed Pinecone index before the assistant can answer. Configure the integrations, then reanalyze the repository."}
+                          {ready
+                            ? "Ask about architecture, data flows, or implementation details. Answers cite the inspected source snapshot."
+                            : "The assistant needs readable source and a configured Gemini or Groq API key."}
                         </p>
                         <div className="mt-7 space-y-2">
-                          {demoQuestions.map((value) => (
+                          {[
+                            "How does the application start?",
+                            "How does data move through this repository?",
+                            "Where are the API routes defined?",
+                          ].map((value) => (
                             <button
                               key={value}
-                              disabled={!demo && !ready}
+                              disabled={!ready}
                               onClick={() => send(value)}
                               className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.02] px-4 py-3 text-left text-xs leading-5 text-zinc-300 transition hover:border-violet-400/30 disabled:opacity-40"
                             >
@@ -265,7 +260,7 @@ export function ChatDrawer({
                             <Sparkles size={13} />
                             CodeLens
                             <span className="text-[10px] font-normal text-zinc-600">
-                              {demo ? "PRESET DEMO" : "RETRIEVED CONTEXT"}
+                              RETRIEVED CONTEXT
                             </span>
                           </div>
                         )}
@@ -335,7 +330,7 @@ export function ChatDrawer({
                           send(question);
                         }
                       }}
-                      disabled={!demo && !ready}
+                      disabled={!ready}
                       rows={2}
                       maxLength={2000}
                       placeholder="Ask about this codebase…"
@@ -357,11 +352,7 @@ export function ChatDrawer({
                       <Button
                         type="submit"
                         size="icon"
-                        disabled={
-                          !question.trim() ||
-                          historyLoading ||
-                          (!demo && !ready)
-                        }
+                        disabled={!question.trim() || historyLoading || !ready}
                         aria-label="Send message"
                         className="size-8"
                       >
@@ -370,9 +361,8 @@ export function ChatDrawer({
                     )}
                   </form>
                   <p className="mt-3 text-center text-[10px] leading-4 text-zinc-500">
-                    {demo
-                      ? "Sample answers only. Select an indexed repository for live chat."
-                      : "Answers can be incomplete. Check the linked source before making changes."}
+                    Answers may be incomplete. Check the linked source for
+                    details.
                   </p>
                 </footer>
               </motion.section>

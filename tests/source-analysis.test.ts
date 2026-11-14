@@ -8,18 +8,13 @@ import {
 } from "../src/lib/server/source-analysis.ts";
 import { graphToMermaid } from "../src/lib/server/generation.ts";
 
-test("excludes generated files, credentials, symlink-style paths and binary extensions", () => {
+test("protects credential files and considers all other tracked files for text inspection", () => {
   for (const path of [
     ".env",
     ".env.example",
     "config/secrets.json",
-    "node_modules/pkg/index.js",
-    "dist/app.js",
     "id_rsa",
     "private.pem",
-    "package-lock.json",
-    "image.png",
-    "a\\b.ts",
   ])
     assert.equal(eligiblePath(path), false, path);
   for (const path of [
@@ -28,6 +23,10 @@ test("excludes generated files, credentials, symlink-style paths and binary exte
     "requirements.txt",
     "Dockerfile",
     "schema.prisma",
+    "node_modules/pkg/index.js",
+    "dist/app.js",
+    "package-lock.json",
+    "image.png",
   ])
     assert.equal(eligiblePath(path), true, path);
 });

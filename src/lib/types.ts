@@ -8,6 +8,13 @@ export type RepositoryPreview = {
   fileCount: number;
   truncated: boolean;
   paths: string[];
+  entries?: RepositoryEntry[];
+};
+
+export type RepositoryEntry = {
+  path: string;
+  kind: "file" | "symlink" | "submodule";
+  preview?: "text" | "binary" | "protected";
 };
 
 export type SourceFile = {
@@ -36,11 +43,24 @@ export type Finding = {
   severity: "high" | "medium" | "low";
   message: string;
 };
+export type ArchitectureNode = {
+  id: string;
+  title: string;
+  description: string;
+  paths: string[];
+  children: ArchitectureNode[];
+};
+export type ArchitectureFlow = {
+  from: string;
+  to: string;
+  description: string;
+};
 export type AnalysisAssets = {
   readme: string;
   architecture: string;
+  architectureTree?: ArchitectureNode[];
+  flows?: ArchitectureFlow[];
   coreFiles: CoreFile[];
-  deployment: { vercel: string; docker: string; aws: string };
   generatedBy: string | null;
   reviewFindings: Finding[];
 };
@@ -98,8 +118,9 @@ export type ChatMessage = {
 };
 export type ServiceConfiguration = {
   clerk: boolean;
+  gemini: boolean;
   groq: boolean;
   pinecone: boolean;
-  database: "postgresql" | "sqlite";
+  database: "supabase" | "postgresql" | "sqlite";
   local: boolean;
 };

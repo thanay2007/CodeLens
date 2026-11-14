@@ -9,7 +9,7 @@ export async function POST(
     sameOrigin(request);
     const owner = await actor(),
       { id } = await context.params;
-    const store = await workspaceStore();
+    const store = await workspaceStore(owner);
     await store.cancel(owner, id);
     return Response.json({ cancelled: true });
   } catch (error) {
